@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 
 use image::ImageReader;
 use ratatui::layout::Rect;
@@ -27,6 +31,22 @@ pub struct ImagePreview {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextPreviewKey {
+    pub path: PathBuf,
+}
+
+impl TextPreviewKey {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+pub struct TextPreview {
+    pub lines: Vec<String>,
+    pub error: Option<String>,
+}
+
 pub fn is_supported_image(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -38,6 +58,79 @@ pub fn is_supported_image(path: &Path) -> bool {
                 "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif"
             )
     )
+}
+
+pub fn is_supported_text(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase()),
+        Some(ext)
+            if matches!(
+                ext.as_str(),
+                "txt" | "md" | "rs" | "toml" | "json" | "yaml" | "yml" | "html" | "css" | "js" | "ts" | "py" | "rpy" | "xml" | "csv" | "log" | "ini"
+            )
+    )
+}
+
+pub fn build_text_preview(path: &Path, max_lines: usize, max_bytes: usize) -> TextPreview {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            return TextPreview {
+                lines: Vec::new(),
+                error: Some(format!("Unable to open file: {err}")),
+            };
+        }
+    };
+
+    let mut reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    let mut buf = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut truncated = false;
+
+    loop {
+        if lines.len() >= max_lines || total_bytes >= max_bytes {
+            truncated = true;
+            break;
+        }
+
+        buf.clear();
+        let read = match reader.read_until(b'\n', &mut buf) {
+            Ok(read) => read,
+            Err(err) => {
+                return TextPreview {
+                    lines: Vec::new(),
+                    error: Some(format!("Unable to read file: {err}")),
+                };
+            }
+        };
+
+        if read == 0 {
+            break;
+        }
+
+        total_bytes = total_bytes.saturating_add(read);
+
+        if buf.ends_with(b"\n") {
+            buf.pop();
+        }
+        if buf.ends_with(b"\r") {
+            buf.pop();
+        }
+
+        lines.push(String::from_utf8_lossy(&buf).to_string());
+    }
+
+    if truncated {
+        lines.push(format!("... truncated after {} lines ...", lines.len()));
+    }
+
+    TextPreview {
+        lines,
+        error: None,
+    }
 }
 
 pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePreview {

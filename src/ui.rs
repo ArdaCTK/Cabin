@@ -8,7 +8,7 @@ use ratatui::{
 use ratatui_image::Image as TerminalImage;
 
 use crate::app::{App, Dialog, Panel};
-use crate::preview::is_supported_image;
+use crate::preview::{is_supported_image, is_supported_text};
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.poll_image_previews();
@@ -160,6 +160,64 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     let loading = Paragraph::new(Line::from("Preparing image preview..."))
                         .wrap(Wrap { trim: false });
                     frame.render_widget(loading, image_area);
+                }
+            }
+
+            return;
+        }
+
+        if is_supported_text(&entry.path) {
+            let text_path = entry.path.clone();
+            let caption_lines = app.preview.lines.clone();
+            let caption_height = caption_lines.len().min(inner.height as usize).min(5) as u16;
+            let caption_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: caption_height,
+            };
+            let caption = Paragraph::new(
+                caption_lines
+                    .iter()
+                    .take(caption_height as usize)
+                    .cloned()
+                    .map(Line::from)
+                    .collect::<Vec<_>>(),
+            )
+            .wrap(Wrap { trim: false });
+            if caption_area.width > 0 && caption_area.height > 0 {
+                frame.render_widget(caption, caption_area);
+            }
+
+            let text_area = Rect {
+                x: inner.x,
+                y: inner.y + caption_height,
+                width: inner.width,
+                height: inner.height.saturating_sub(caption_height),
+            };
+
+            if text_area.width > 0 && text_area.height > 0 {
+                if let Some(preview) = app.cached_text_preview(&text_path) {
+                    if let Some(error) = preview.error.as_ref() {
+                        let error = Paragraph::new(Line::from(error.clone()))
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(error, text_area);
+                    } else {
+                        let content = Text::from(
+                            preview
+                                .lines
+                                .iter()
+                                .cloned()
+                                .map(Line::from)
+                                .collect::<Vec<_>>(),
+                        );
+                        let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+                        frame.render_widget(paragraph, text_area);
+                    }
+                } else {
+                    let loading = Paragraph::new(Line::from("Preparing text preview..."))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(loading, text_area);
                 }
             }
 
