@@ -14,6 +14,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use directories_next::{BaseDirs, UserDirs};
 use trash::delete;
 
+use crate::preview::ImagePreview;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Places,
@@ -107,6 +109,7 @@ pub struct App {
     pub places_selected: usize,
     pub contents_selected: usize,
     pub preview: PreviewData,
+    pub image_preview: Option<ImagePreview>,
     pub show_hidden: bool,
     pub status_message: Option<String>,
     pub help_visible: bool,
@@ -131,6 +134,7 @@ impl App {
             places_selected: 0,
             contents_selected: 0,
             preview: PreviewData { lines: Vec::new() },
+            image_preview: None,
             show_hidden: false,
             status_message: Some(String::from("Cabin is ready.")),
             help_visible: false,
@@ -231,6 +235,7 @@ impl App {
     }
 
     fn refresh_preview(&mut self) {
+        self.image_preview = None;
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };

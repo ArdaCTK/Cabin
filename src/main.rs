@@ -47,7 +47,7 @@ fn run() -> Result<()> {
     let mut app = App::new()?;
 
     loop {
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         if app.should_quit {
             break;

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use image::imageops::FilterType;
@@ -7,6 +7,14 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
+
+#[derive(Debug, Clone)]
+pub struct ImagePreview {
+    pub path: PathBuf,
+    pub area: Rect,
+    pub caption: Vec<String>,
+    pub lines: Vec<Line<'static>>,
+}
 
 pub fn is_supported_image(path: &Path) -> bool {
     matches!(
@@ -21,9 +29,14 @@ pub fn is_supported_image(path: &Path) -> bool {
     )
 }
 
-pub fn build_image_lines(path: &Path, area: Rect) -> Result<Vec<Line<'static>>> {
+pub fn build_image_preview(path: &Path, area: Rect, caption: Vec<String>) -> Result<ImagePreview> {
     if area.width == 0 || area.height == 0 {
-        return Ok(Vec::new());
+        return Ok(ImagePreview {
+            path: path.to_path_buf(),
+            area,
+            caption,
+            lines: Vec::new(),
+        });
     }
 
     let image = image::open(path)
@@ -32,7 +45,12 @@ pub fn build_image_lines(path: &Path, area: Rect) -> Result<Vec<Line<'static>>> 
     let (src_w, src_h) = (image.width(), image.height());
 
     if src_w == 0 || src_h == 0 {
-        return Ok(Vec::new());
+        return Ok(ImagePreview {
+            path: path.to_path_buf(),
+            area,
+            caption,
+            lines: Vec::new(),
+        });
     }
 
     let target_w = area.width.max(1) as u32;
@@ -47,7 +65,7 @@ pub fn build_image_lines(path: &Path, area: Rect) -> Result<Vec<Line<'static>>> 
         resized_h += 1;
     }
 
-    let resized = image::imageops::resize(&image, resized_w, resized_h, FilterType::Triangle);
+    let resized = image::imageops::resize(&image, resized_w, resized_h, FilterType::CatmullRom);
     resized_w = resized.width();
     resized_h = resized.height();
 
@@ -74,7 +92,7 @@ pub fn build_image_lines(path: &Path, area: Rect) -> Result<Vec<Line<'static>>> 
             let top = resized.get_pixel(col as u32, (row as u32) * 2);
             let bottom = resized.get_pixel(col as u32, (row as u32) * 2 + 1);
             spans.push(Span::styled(
-                "▀",
+                "\u{2580}",
                 Style::default()
                     .fg(rgb_to_color(top.0))
                     .bg(rgb_to_color(bottom.0)),
@@ -93,7 +111,12 @@ pub fn build_image_lines(path: &Path, area: Rect) -> Result<Vec<Line<'static>>> 
         lines.push(blank_line(area.width));
     }
 
-    Ok(lines)
+    Ok(ImagePreview {
+        path: path.to_path_buf(),
+        area,
+        caption,
+        lines,
+    })
 }
 
 fn blank_line(width: u16) -> Line<'static> {
@@ -102,9 +125,7 @@ fn blank_line(width: u16) -> Line<'static> {
 
 fn rgb_to_color(rgba: [u8; 4]) -> Color {
     let alpha = rgba[3] as u16;
-    let blend = |channel: u8| -> u8 {
-        ((channel as u16 * alpha) / 255) as u8
-    };
+    let blend = |channel: u8| -> u8 { ((channel as u16 * alpha) / 255) as u8 };
 
     Color::Rgb(blend(rgba[0]), blend(rgba[1]), blend(rgba[2]))
 }

@@ -7,9 +7,9 @@ use ratatui::{
 };
 
 use crate::app::{App, Dialog, Panel};
-use crate::preview::{build_image_lines, is_supported_image};
+use crate::preview::{build_image_preview, is_supported_image};
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let size = frame.size();
 
     let outer = Layout::default()
@@ -39,7 +39,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(title, area);
 }
 
-fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let widths = if area.width < 90 {
         [Constraint::Length(18), Constraint::Min(24), Constraint::Length(28)]
     } else {
@@ -51,8 +51,8 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints(widths)
         .split(area);
 
-    draw_places(frame, columns[0], app);
-    draw_contents(frame, columns[1], app);
+    draw_places(frame, columns[0], &*app);
+    draw_contents(frame, columns[1], &*app);
     draw_preview(frame, columns[2], app);
 }
 
@@ -105,7 +105,7 @@ fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let block = panel_block("Preview", app.active_panel == Panel::Preview);
 
     if let Some(entry) = app.entries.get(app.contents_selected) {
@@ -114,7 +114,7 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &App) {
             frame.render_widget(block, area);
 
             let caption_lines = app.preview.lines.clone();
-            let caption_height = caption_lines.len().min(inner.height as usize).min(4) as u16;
+            let caption_height = caption_lines.len().min(inner.height as usize).min(5) as u16;
             let caption_area = Rect {
                 x: inner.x,
                 y: inner.y,
@@ -123,8 +123,9 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &App) {
             };
             let caption = Paragraph::new(
                 caption_lines
-                    .into_iter()
+                    .iter()
                     .take(caption_height as usize)
+                    .cloned()
                     .map(Line::from)
                     .collect::<Vec<_>>(),
             )
@@ -139,18 +140,35 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &App) {
             };
 
             if image_area.width > 0 && image_area.height > 0 {
-                match build_image_lines(&entry.path, image_area) {
-                    Ok(lines) => {
-                        let image = Paragraph::new(Text::from(lines));
-                        frame.render_widget(image, image_area);
+                let needs_refresh = app
+                    .image_preview
+                    .as_ref()
+                    .map(|cached| {
+                        cached.path != entry.path
+                            || cached.area != image_area
+                            || cached.caption != caption_lines
+                    })
+                    .unwrap_or(true);
+
+                if needs_refresh {
+                    match build_image_preview(&entry.path, image_area, caption_lines.clone()) {
+                        Ok(preview) => {
+                            app.image_preview = Some(preview);
+                        }
+                        Err(err) => {
+                            let error = Paragraph::new(Line::from(format!(
+                                "Image preview error: {err}"
+                            )))
+                            .wrap(Wrap { trim: false });
+                            frame.render_widget(error, image_area);
+                            return;
+                        }
                     }
-                    Err(err) => {
-                        let error = Paragraph::new(Line::from(format!(
-                            "Image preview error: {err}"
-                        )))
-                        .wrap(Wrap { trim: false });
-                        frame.render_widget(error, image_area);
-                    }
+                }
+
+                if let Some(preview) = app.image_preview.as_ref() {
+                    let image = Paragraph::new(Text::from(preview.lines.clone()));
+                    frame.render_widget(image, image_area);
                 }
             }
 
