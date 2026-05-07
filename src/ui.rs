@@ -203,6 +203,11 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                             .wrap(Wrap { trim: false });
                         frame.render_widget(error, text_area);
                     } else {
+                        let max_scroll = preview
+                            .lines
+                            .len()
+                            .saturating_sub(text_area.height as usize) as u16;
+                        let scroll = app.preview_scroll.min(max_scroll);
                         let content = Text::from(
                             preview
                                 .lines
@@ -211,7 +216,9 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                                 .map(Line::from)
                                 .collect::<Vec<_>>(),
                         );
-                        let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+                        let paragraph = Paragraph::new(content)
+                            .scroll((scroll, 0))
+                            .wrap(Wrap { trim: false });
                         frame.render_widget(paragraph, text_area);
                     }
                 } else {

@@ -129,6 +129,7 @@ pub struct App {
     image_jobs_rx: Receiver<ImagePreview>,
     image_pending: HashSet<ImagePreviewKey>,
     pub last_image_area: Option<Rect>,
+    pub preview_scroll: u16,
     pub show_hidden: bool,
     pub status_message: Option<String>,
     pub help_visible: bool,
@@ -165,6 +166,7 @@ impl App {
             image_jobs_rx,
             image_pending: HashSet::new(),
             last_image_area: None,
+            preview_scroll: 0,
             show_hidden: false,
             status_message: Some(String::from("Cabin is ready.")),
             help_visible: false,
@@ -201,8 +203,8 @@ impl App {
             KeyCode::Tab => self.next_panel(),
             KeyCode::BackTab => self.previous_panel(),
             KeyCode::Char('h') => self.toggle_hidden(),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::Enter => self.open_selected(),
             KeyCode::Backspace | KeyCode::Left => self.go_parent(),
             KeyCode::F(5) => self.refresh_current(),
@@ -268,6 +270,7 @@ impl App {
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
+        self.preview_scroll = 0;
         self.refresh_text_preview();
     }
 
@@ -369,6 +372,25 @@ impl App {
         if let Some(area) = self.last_image_area {
             self.prefetch_visible_image_previews(area);
         }
+    }
+
+    fn move_up(&mut self) {
+        match self.active_panel {
+            Panel::Preview => self.scroll_preview(-1),
+            _ => self.move_selection(-1),
+        }
+    }
+
+    fn move_down(&mut self) {
+        match self.active_panel {
+            Panel::Preview => self.scroll_preview(1),
+            _ => self.move_selection(1),
+        }
+    }
+
+    fn scroll_preview(&mut self, delta: isize) {
+        let next = self.preview_scroll as isize + delta;
+        self.preview_scroll = next.max(0) as u16;
     }
 
     fn handle_dialog_key(&mut self, key: KeyEvent) -> bool {
@@ -1375,8 +1397,8 @@ fn help_lines() -> Vec<String> {
         String::from("?          Toggle help"),
         String::from("Tab        Next panel"),
         String::from("Shift+Tab  Previous panel"),
-        String::from("Up/Down    Move selection"),
-        String::from("j/k        Move selection"),
+        String::from("Up/Down    Move selection or scroll preview"),
+        String::from("j/k        Move selection or scroll preview"),
         String::from("Enter      Open selected item"),
         String::from("Backspace  Parent folder"),
         String::from("Left       Parent folder"),
