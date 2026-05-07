@@ -20,8 +20,9 @@ use ratatui_image::picker::Picker;
 use trash::delete;
 
 use crate::preview::{
-    build_image_preview, build_text_preview, is_supported_text, ImagePreview, ImagePreviewKey,
-    TextPreview, TextPreviewKey,
+    build_image_preview, build_text_preview, build_video_preview, is_supported_text,
+    is_supported_video, ImagePreview, ImagePreviewKey, TextPreview, TextPreviewKey, VideoPreview,
+    VideoPreviewKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub kind: EntryKind,
     pub size: Option<u64>,
+    pub created: Option<SystemTime>,
     pub modified: Option<SystemTime>,
     pub extension: Option<String>,
     pub is_hidden: bool,
@@ -123,6 +125,8 @@ pub struct App {
     pub preview: PreviewData,
     pub text_cache: HashMap<TextPreviewKey, TextPreview>,
     pub text_cache_order: VecDeque<TextPreviewKey>,
+    pub video_cache: HashMap<VideoPreviewKey, VideoPreview>,
+    pub video_cache_order: VecDeque<VideoPreviewKey>,
     pub image_cache: HashMap<ImagePreviewKey, ImagePreview>,
     pub image_cache_order: VecDeque<ImagePreviewKey>,
     image_jobs_tx: Sender<ImageJob>,
@@ -160,6 +164,8 @@ impl App {
             preview: PreviewData { lines: Vec::new() },
             text_cache: HashMap::new(),
             text_cache_order: VecDeque::new(),
+            video_cache: HashMap::new(),
+            video_cache_order: VecDeque::new(),
             image_cache: HashMap::new(),
             image_cache_order: VecDeque::new(),
             image_jobs_tx,
@@ -267,6 +273,7 @@ impl App {
     }
 
     fn refresh_preview(&mut self) {
+        self.refresh_video_preview();
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
@@ -301,6 +308,35 @@ impl App {
     pub fn cached_text_preview(&self, path: &Path) -> Option<&TextPreview> {
         let key = TextPreviewKey::new(path.to_path_buf());
         self.text_cache.get(&key)
+    }
+
+    fn refresh_video_preview(&mut self) {
+        let Some(entry) = self.current_selection().cloned() else {
+            return;
+        };
+
+        if entry.kind != EntryKind::File || !is_supported_video(&entry.path) {
+            return;
+        }
+
+        let key = VideoPreviewKey::new(entry.path.clone());
+        if self.video_cache.contains_key(&key) {
+            return;
+        }
+
+        let preview = build_video_preview(&entry.path);
+        self.video_cache.insert(key.clone(), preview);
+        self.video_cache_order.push_back(key);
+        while self.video_cache_order.len() > 24 {
+            if let Some(oldest) = self.video_cache_order.pop_front() {
+                self.video_cache.remove(&oldest);
+            }
+        }
+    }
+
+    pub fn cached_video_preview(&self, path: &Path) -> Option<&VideoPreview> {
+        let key = VideoPreviewKey::new(path.to_path_buf());
+        self.video_cache.get(&key)
     }
 
     pub fn poll_image_previews(&mut self) {
@@ -487,7 +523,85 @@ impl App {
                 String::from("Type: Folder"),
                 format!("Path: {}", entry.path.display()),
                 format!("Items: {}", child_count),
+                format!(
+                    "Created at: {}",
+                    entry
+                        .created
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ),
+                format!(
+                    "Modified: {}",
+                    entry
+                        .modified
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ),
             ]
+        } else if is_supported_video(&entry.path) {
+            if let Some(preview) = self.cached_video_preview(&entry.path) {
+                let mut lines = preview.lines.clone();
+                if let Some(error) = preview.error.as_ref() {
+                    lines.push(String::new());
+                    lines.push(format!("Note: {error}"));
+                }
+                lines.push(format!(
+                    "Size: {}",
+                    entry
+                        .size
+                        .map(human_size)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!(
+                    "Created at: {}",
+                    entry
+                        .created
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!(
+                    "Modified: {}",
+                    entry
+                        .modified
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!("Path: {}", entry.path.display()));
+                lines
+            } else {
+                vec![
+                    String::from("Type: Video"),
+                    format!(
+                        "Extension: {}",
+                        entry
+                            .extension
+                            .clone()
+                            .unwrap_or_else(|| String::from("(none)"))
+                    ),
+                    format!(
+                        "Size: {}",
+                        entry
+                            .size
+                            .map(human_size)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!(
+                        "Created at: {}",
+                        entry
+                            .created
+                            .map(format_system_time)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!(
+                        "Modified: {}",
+                        entry
+                            .modified
+                            .map(format_system_time)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!("Path: {}", entry.path.display()),
+                ]
+            }
         } else if is_supported_text(&entry.path) {
             vec![
                 String::from("Type: Text file"),
@@ -503,6 +617,13 @@ impl App {
                     entry
                         .size
                         .map(human_size)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ),
+                format!(
+                    "Created at: {}",
+                    entry
+                        .created
+                        .map(format_system_time)
                         .unwrap_or_else(|| String::from("Unknown"))
                 ),
                 format!(
@@ -530,6 +651,13 @@ impl App {
                     entry
                         .size
                         .map(human_size)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ),
+                format!(
+                    "Created at: {}",
+                    entry
+                        .created
+                        .map(format_system_time)
                         .unwrap_or_else(|| String::from("Unknown"))
                 ),
                 format!(
@@ -1177,6 +1305,7 @@ fn read_directory(dir: &Path, show_hidden: bool) -> Result<Vec<FileEntry>> {
             path,
             kind,
             size: metadata.as_ref().map(|meta| meta.len()),
+            created: metadata.as_ref().and_then(|meta| meta.created().ok()),
             modified: metadata.as_ref().and_then(|meta| meta.modified().ok()),
             extension,
             is_hidden,
@@ -1260,6 +1389,7 @@ fn search_recursive(base: &Path, query: &str, show_hidden: bool) -> Result<Vec<F
             path: path.to_path_buf(),
             kind,
             size: metadata.as_ref().map(|meta| meta.len()),
+            created: metadata.as_ref().and_then(|meta| meta.created().ok()),
             modified: metadata.as_ref().and_then(|meta| meta.modified().ok()),
             extension: path
                 .extension()

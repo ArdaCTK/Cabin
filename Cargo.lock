@@ -235,6 +235,7 @@ dependencies = [
  "image",
  "ratatui",
  "ratatui-image",
+ "remeta",
  "trash",
 ]
 
@@ -1516,6 +1517,12 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "remeta"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cadc813b1afa5a3de59ae0af9b800e9f92d39192d15fc28b853a7d868312740"
 
 [[package]]
 name = "rgb"

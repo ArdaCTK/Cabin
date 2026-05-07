@@ -13,4 +13,5 @@ ignore = "0.4"
 image = "0.25"
 ratatui = "0.29"
 ratatui-image = { version = "8.1.1", default-features = false, features = ["image-defaults", "crossterm"] }
+remeta = { version = "1.2", features = ["videos"] }
 trash = "5"
