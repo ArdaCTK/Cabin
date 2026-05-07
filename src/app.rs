@@ -131,6 +131,8 @@ pub struct App {
     pub video_cache_order: VecDeque<VideoPreviewKey>,
     pub image_cache: HashMap<ImagePreviewKey, ImagePreview>,
     pub image_cache_order: VecDeque<ImagePreviewKey>,
+    pub hovered_place_entries: Vec<FileEntry>,
+    pub hovered_place_error: Option<String>,
     image_jobs_tx: Sender<ImageJob>,
     image_jobs_rx: Receiver<ImagePreview>,
     image_pending: HashSet<ImagePreviewKey>,
@@ -182,6 +184,8 @@ impl App {
             video_cache_order: VecDeque::new(),
             image_cache: HashMap::new(),
             image_cache_order: VecDeque::new(),
+            hovered_place_entries: Vec::new(),
+            hovered_place_error: None,
             image_jobs_tx,
             image_jobs_rx,
             image_pending: HashSet::new(),
@@ -201,6 +205,7 @@ impl App {
             path: app.current_dir.clone(),
         };
         app.refresh_entries()?;
+        app.refresh_hovered_place_entries();
         Ok(app)
     }
 
@@ -359,6 +364,10 @@ impl App {
     pub fn cached_video_preview(&self, path: &Path) -> Option<&VideoPreview> {
         let key = VideoPreviewKey::new(path.to_path_buf());
         self.video_cache.get(&key)
+    }
+
+    fn directory_preview_entries(&self, path: &Path) -> Vec<FileEntry> {
+        read_directory(path, self.show_hidden).unwrap_or_default()
     }
 
     pub fn poll_image_previews(&mut self) {
@@ -662,15 +671,16 @@ impl App {
                 String::from("Type: Folder"),
                 format!("Path: {}", self.current_dir.display()),
                 String::from("Items: 0"),
+                String::from("Contents:"),
             ];
         };
 
         if entry.kind == EntryKind::Directory {
-            let child_count = fs::read_dir(&entry.path).map(|it| it.count()).unwrap_or(0);
-            vec![
+            let children = self.directory_preview_entries(&entry.path);
+            let mut lines = vec![
                 String::from("Type: Folder"),
                 format!("Path: {}", entry.path.display()),
-                format!("Items: {}", child_count),
+                format!("Items: {}", children.len()),
                 format!(
                     "Created at: {}",
                     entry
@@ -685,7 +695,32 @@ impl App {
                         .map(format_system_time)
                         .unwrap_or_else(|| String::from("Unknown"))
                 ),
-            ]
+                String::from("Contents:"),
+            ];
+
+            if children.is_empty() {
+                lines.push(String::from("(empty)"));
+            } else {
+                for child in children.iter().take(18) {
+                    let marker = if child.kind == EntryKind::Directory {
+                        format!("{}/", child.name)
+                    } else {
+                        child.name.clone()
+                    };
+                    let marker = if child.is_hidden {
+                        format!(". {marker}")
+                    } else {
+                        marker
+                    };
+                    lines.push(marker);
+                }
+
+                if children.len() > 18 {
+                    lines.push(format!("... and {} more", children.len() - 18));
+                }
+            }
+
+            lines
         } else if is_supported_video(&entry.path) {
             if let Some(preview) = self.cached_video_preview(&entry.path) {
                 let mut lines = preview.lines.clone();
@@ -915,6 +950,7 @@ impl App {
                     return;
                 }
                 self.places_selected = move_index(self.places_selected, delta, self.places.len());
+                self.refresh_hovered_place_entries();
                 self.refresh_preview();
                 self.prefetch_last_image_area();
             }
@@ -936,6 +972,7 @@ impl App {
             Panel::Contents => Panel::Preview,
             Panel::Preview => Panel::Places,
         };
+        self.refresh_hovered_place_entries();
         self.refresh_preview();
         self.prefetch_last_image_area();
     }
@@ -946,6 +983,7 @@ impl App {
             Panel::Contents => Panel::Places,
             Panel::Preview => Panel::Contents,
         };
+        self.refresh_hovered_place_entries();
         self.refresh_preview();
         self.prefetch_last_image_area();
     }
@@ -1286,9 +1324,38 @@ impl App {
         self.contents_selected = self
             .contents_selected
             .min(self.entries.len().saturating_sub(1));
+        self.refresh_hovered_place_entries();
         self.refresh_preview();
         self.prefetch_last_image_area();
         Ok(())
+    }
+
+    fn refresh_hovered_place_entries(&mut self) {
+        if self.active_panel != Panel::Places {
+            self.hovered_place_entries = self.directory_entries.clone();
+            self.hovered_place_error = None;
+            return;
+        }
+
+        let Some(place) = self.places.get(self.places_selected).cloned() else {
+            self.hovered_place_entries.clear();
+            self.hovered_place_error = None;
+            return;
+        };
+
+        match read_directory(&place.path, self.show_hidden) {
+            Ok(entries) => {
+                self.hovered_place_entries = entries;
+                self.hovered_place_error = None;
+            }
+            Err(err) => {
+                self.hovered_place_entries.clear();
+                self.hovered_place_error = Some(format!(
+                    "Unable to read {}: {err}",
+                    place.path.display()
+                ));
+            }
+        }
     }
 
     fn sync_places_selection(&mut self) {

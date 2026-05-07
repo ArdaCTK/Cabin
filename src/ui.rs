@@ -84,19 +84,11 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             }
         }
         PanelLayout::PreviewFocus => {
-            if area.width < 90 {
-                [
-                    Constraint::Length(16),
-                    Constraint::Min(22),
-                    Constraint::Length(32),
-                ]
-            } else {
-                [
-                    Constraint::Length(18),
-                    Constraint::Min(28),
-                    Constraint::Length(44),
-                ]
-            }
+            [
+                Constraint::Percentage(15),
+                Constraint::Percentage(25),
+                Constraint::Percentage(60),
+            ]
         }
         PanelLayout::ContentsFocus => {
             if area.width < 90 {
@@ -139,17 +131,34 @@ fn draw_places(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .highlight_style(active_style(app))
         .highlight_symbol("> ");
 
-    let mut state = list_state(app.places_selected, app.places.len());
+    let mut state = list_state(Some(app.places_selected), app.places.len());
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let active = app.active_panel == Panel::Contents;
     let block = panel_block("Contents", active, app);
-    let items = if app.entries.is_empty() {
+    let entries = if app.active_panel == Panel::Places {
+        &app.hovered_place_entries
+    } else {
+        &app.entries
+    };
+
+    if app.active_panel == Panel::Places {
+        if let Some(error) = app.hovered_place_error.as_ref() {
+            let paragraph = Paragraph::new(Line::from(error.clone()))
+                .style(app.config.panel_style())
+                .block(block)
+                .wrap(Wrap { trim: false });
+            frame.render_widget(paragraph, area);
+            return;
+        }
+    }
+
+    let items = if entries.is_empty() {
         vec![ListItem::new(Line::from("Empty folder"))]
     } else {
-        app.entries
+        entries
             .iter()
             .map(|entry| {
                 let marker = if entry.kind == crate::app::EntryKind::Directory {
@@ -172,7 +181,11 @@ fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .highlight_style(active_style(app))
         .highlight_symbol("> ");
 
-    let mut state = list_state(app.contents_selected, app.entries.len());
+    let mut state = if app.active_panel == Panel::Places {
+        list_state(None, entries.len())
+    } else {
+        list_state(Some(app.contents_selected), entries.len())
+    };
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -463,7 +476,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         height: area.height.saturating_sub(3),
     };
 
-    let mut state = list_state(app.settings_selected, rows.len());
+    let mut state = list_state(Some(app.settings_selected), rows.len());
     frame.render_stateful_widget(list, list_area, &mut state);
 
     let footer_area = Rect {
@@ -497,10 +510,10 @@ fn active_style(app: &App) -> Style {
     app.config.active_style()
 }
 
-fn list_state(selected: usize, len: usize) -> ratatui::widgets::ListState {
+fn list_state(selected: Option<usize>, len: usize) -> ratatui::widgets::ListState {
     let mut state = ratatui::widgets::ListState::default();
     if len > 0 {
-        state.select(Some(selected.min(len.saturating_sub(1))));
+        state.select(selected.map(|index| index.min(len.saturating_sub(1))));
     }
     state
 }
