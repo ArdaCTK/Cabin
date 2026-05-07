@@ -150,6 +150,10 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::raw(" copy path  "),
         Span::styled("F5", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" refresh  "),
+        Span::styled("/", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" search  "),
+        Span::styled("Ctrl+f", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" recursive search  "),
         Span::raw("  |  "),
         Span::raw(message),
     ]))
@@ -175,6 +179,8 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("p        Paste into current folder"),
         Line::from("y        Copy selected path"),
         Line::from("F5       Refresh folder"),
+        Line::from("/        Search current folder"),
+        Line::from("Ctrl+f   Recursive search"),
     ];
 
     let paragraph = Paragraph::new(lines)

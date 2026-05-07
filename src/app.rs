@@ -67,10 +67,19 @@ pub struct PendingOperation {
 }
 
 #[derive(Debug, Clone)]
+pub enum ContentsMode {
+    Directory { path: PathBuf },
+    SearchCurrent { base: PathBuf, query: String },
+    SearchRecursive { base: PathBuf, query: String },
+}
+
+#[derive(Debug, Clone)]
 pub enum InputAction {
     CreateFile { dir: PathBuf },
     CreateFolder { dir: PathBuf },
     Rename { source: PathBuf },
+    SearchCurrent { base: PathBuf },
+    SearchRecursive { base: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +101,9 @@ pub struct App {
     pub active_panel: Panel,
     pub current_dir: PathBuf,
     pub places: Vec<Place>,
+    pub directory_entries: Vec<FileEntry>,
     pub entries: Vec<FileEntry>,
+    pub contents_mode: ContentsMode,
     pub places_selected: usize,
     pub contents_selected: usize,
     pub preview: PreviewData,
@@ -112,7 +123,11 @@ impl App {
             active_panel: Panel::Contents,
             current_dir,
             places,
+            directory_entries: Vec::new(),
             entries: Vec::new(),
+            contents_mode: ContentsMode::Directory {
+                path: PathBuf::new(),
+            },
             places_selected: 0,
             contents_selected: 0,
             preview: PreviewData { lines: Vec::new() },
@@ -124,6 +139,9 @@ impl App {
         };
 
         app.sync_places_selection();
+        app.contents_mode = ContentsMode::Directory {
+            path: app.current_dir.clone(),
+        };
         app.refresh_entries()?;
         Ok(app)
     }
@@ -154,6 +172,10 @@ impl App {
             KeyCode::Enter => self.open_selected(),
             KeyCode::Backspace | KeyCode::Left => self.go_parent(),
             KeyCode::F(5) => self.refresh_current(),
+            KeyCode::Char('/') => self.begin_search_current(),
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.begin_search_recursive()
+            }
             KeyCode::Char('y') => self.copy_current_path(),
             KeyCode::Char('c') => self.mark_copy(),
             KeyCode::Char('x') => self.mark_cut(),
@@ -393,6 +415,9 @@ impl App {
         }
 
         self.current_dir = canonical;
+        self.contents_mode = ContentsMode::Directory {
+            path: self.current_dir.clone(),
+        };
         self.sync_places_selection();
         self.refresh_entries()?;
         Ok(())
@@ -505,6 +530,28 @@ impl App {
         self.set_status("Type a folder name, then press Enter.");
     }
 
+    fn begin_search_current(&mut self) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from("Search current folder"),
+            value: String::new(),
+            action: InputAction::SearchCurrent {
+                base: self.current_dir.clone(),
+            },
+        });
+        self.set_status("Type a search term, then press Enter.");
+    }
+
+    fn begin_search_recursive(&mut self) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from("Recursive search"),
+            value: String::new(),
+            action: InputAction::SearchRecursive {
+                base: self.current_dir.clone(),
+            },
+        });
+        self.set_status("Type a search term, then press Enter.");
+    }
+
     fn begin_rename(&mut self) {
         let Some(entry) = self.selected_entry().cloned() else {
             self.set_status("Select a file or folder in Contents first.");
@@ -592,6 +639,25 @@ impl App {
     }
 
     fn with_clipboard_info(&self, mut lines: Vec<String>) -> Vec<String> {
+        match &self.contents_mode {
+            ContentsMode::Directory { path } => {
+                lines.push(String::new());
+                lines.push(format!("Folder: {}", path.display()));
+            }
+            ContentsMode::SearchCurrent { base, query } => {
+                lines.push(String::new());
+                lines.push(format!("Search: current folder"));
+                lines.push(format!("Base: {}", base.display()));
+                lines.push(format!("Query: {}", query));
+            }
+            ContentsMode::SearchRecursive { base, query } => {
+                lines.push(String::new());
+                lines.push(format!("Search: recursive"));
+                lines.push(format!("Base: {}", base.display()));
+                lines.push(format!("Query: {}", query));
+            }
+        }
+
         if let Some(operation) = self.pending_operation.as_ref() {
             lines.push(String::new());
             let mode = match operation.mode {
@@ -639,6 +705,34 @@ impl App {
                     format!("Unable to rename {} to {}", source.display(), path.display())
                 })?;
                 path
+            }
+            InputAction::SearchCurrent { base } => {
+                self.contents_mode = ContentsMode::SearchCurrent {
+                    base: base.clone(),
+                    query: name.to_string(),
+                };
+                self.contents_selected = 0;
+                self.apply_contents_mode()?;
+                self.set_status(format!(
+                    "Filtered current folder for \"{}\".",
+                    name
+                ));
+                self.dialog = None;
+                return Ok(());
+            }
+            InputAction::SearchRecursive { base } => {
+                self.contents_mode = ContentsMode::SearchRecursive {
+                    base: base.clone(),
+                    query: name.to_string(),
+                };
+                self.contents_selected = 0;
+                self.apply_contents_mode()?;
+                self.set_status(format!(
+                    "Search results for \"{}\".",
+                    name
+                ));
+                self.dialog = None;
+                return Ok(());
             }
         };
 
@@ -703,7 +797,21 @@ impl App {
     }
 
     fn refresh_entries(&mut self) -> Result<()> {
-        self.entries = read_directory(&self.current_dir, self.show_hidden)?;
+        self.directory_entries = read_directory(&self.current_dir, self.show_hidden)?;
+        self.apply_contents_mode()
+    }
+
+    fn apply_contents_mode(&mut self) -> Result<()> {
+        self.entries = match &self.contents_mode {
+            ContentsMode::Directory { .. } => self.directory_entries.clone(),
+            ContentsMode::SearchCurrent { query, .. } => {
+                filter_entries(&self.directory_entries, query)
+            }
+            ContentsMode::SearchRecursive { base, query } => {
+                search_recursive(base, query, self.show_hidden)?
+            }
+        };
+
         self.contents_selected = self.contents_selected.min(self.entries.len().saturating_sub(1));
         self.refresh_preview();
         Ok(())
@@ -886,6 +994,99 @@ fn read_directory(dir: &Path, show_hidden: bool) -> Result<Vec<FileEntry>> {
     Ok(entries)
 }
 
+fn filter_entries(entries: &[FileEntry], query: &str) -> Vec<FileEntry> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return entries.to_vec();
+    }
+
+    let mut filtered = entries
+        .iter()
+        .filter(|entry| {
+            entry.name.to_lowercase().contains(&needle)
+                || entry.path.to_string_lossy().to_lowercase().contains(&needle)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    filtered.sort_by(compare_entries);
+    filtered
+}
+
+fn search_recursive(base: &Path, query: &str, show_hidden: bool) -> Result<Vec<FileEntry>> {
+    let needle = query.trim().to_lowercase();
+    let mut results = Vec::new();
+    let walker = ignore::WalkBuilder::new(base)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .build();
+
+    for result in walker {
+        let entry = result?;
+        let path = entry.path();
+
+        if path == base {
+            continue;
+        }
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !show_hidden && is_hidden(path, &file_name, None) {
+            continue;
+        }
+
+        if is_ignored_search_dir(&file_name) {
+            continue;
+        }
+
+        let metadata = entry.metadata().ok();
+        let file_type = entry.file_type();
+        let kind = if file_type.map(|ft| ft.is_dir()).unwrap_or(false) {
+            EntryKind::Directory
+        } else if file_type.map(|ft| ft.is_symlink()).unwrap_or(false) {
+            EntryKind::Symlink
+        } else if file_type.map(|ft| ft.is_file()).unwrap_or(false) {
+            EntryKind::File
+        } else {
+            EntryKind::Unknown
+        };
+
+        let relative = path.strip_prefix(base).unwrap_or(path);
+        let relative_name = relative.to_string_lossy().to_string();
+        if !needle.is_empty()
+            && !relative_name.to_lowercase().contains(&needle)
+            && !file_name.to_lowercase().contains(&needle)
+        {
+            continue;
+        }
+
+        results.push(FileEntry {
+            name: relative_name,
+            path: path.to_path_buf(),
+            kind,
+            size: metadata.as_ref().map(|meta| meta.len()),
+            modified: metadata.as_ref().and_then(|meta| meta.modified().ok()),
+            extension: path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| format!(".{ext}")),
+            is_hidden: is_hidden(path, &file_name, metadata.as_ref()),
+        });
+    }
+
+    results.sort_by(compare_entries);
+    Ok(results)
+}
+
+fn is_ignored_search_dir(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".cache"
+    )
+}
+
 fn compare_entries(left: &FileEntry, right: &FileEntry) -> Ordering {
     match (left.kind == EntryKind::Directory, right.kind == EntryKind::Directory) {
         (true, false) => Ordering::Less,
@@ -1009,5 +1210,12 @@ fn help_lines() -> Vec<String> {
         String::from("Backspace  Parent folder"),
         String::from("Left       Parent folder"),
         String::from("h          Toggle hidden files"),
+        String::from("c          Mark selected item for copy"),
+        String::from("x          Mark selected item for move"),
+        String::from("p          Paste into current folder"),
+        String::from("y          Copy selected path"),
+        String::from("F5         Refresh folder"),
+        String::from("/          Search current folder"),
+        String::from("Ctrl+f     Recursive search"),
     ]
 }
