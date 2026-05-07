@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod preview;
 mod ui;
 
@@ -8,9 +9,7 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event},
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
@@ -22,7 +21,12 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, crossterm::event::DisableMouseCapture, crossterm::cursor::Show);
+        let _ = execute!(
+            stdout,
+            LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show
+        );
     }
 }
 

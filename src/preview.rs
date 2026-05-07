@@ -154,10 +154,7 @@ pub fn build_text_preview(path: &Path, max_lines: usize, max_bytes: usize) -> Te
         lines.push(format!("... truncated after {} lines ...", lines.len()));
     }
 
-    TextPreview {
-        lines,
-        error: None,
-    }
+    TextPreview { lines, error: None }
 }
 
 pub fn build_video_preview(path: &Path) -> VideoPreview {
@@ -201,9 +198,7 @@ pub fn build_video_preview(path: &Path) -> VideoPreview {
         ),
         format!(
             "Codec: {}",
-            metadata
-                .codec
-                .unwrap_or_else(|| String::from("Unknown"))
+            metadata.codec.unwrap_or_else(|| String::from("Unknown"))
         ),
     ];
 

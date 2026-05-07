@@ -19,6 +19,7 @@ use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use trash::delete;
 
+use crate::config::CabinConfig;
 use crate::preview::{
     build_image_preview, build_text_preview, build_video_preview, is_supported_text,
     is_supported_video, ImagePreview, ImagePreviewKey, TextPreview, TextPreviewKey, VideoPreview,
@@ -115,6 +116,7 @@ struct ImageJob {
 pub struct App {
     pub should_quit: bool,
     pub active_panel: Panel,
+    pub config: CabinConfig,
     pub current_dir: PathBuf,
     pub places: Vec<Place>,
     pub directory_entries: Vec<FileEntry>,
@@ -137,21 +139,33 @@ pub struct App {
     pub show_hidden: bool,
     pub status_message: Option<String>,
     pub help_visible: bool,
+    pub settings_visible: bool,
+    pub settings_selected: usize,
     pub dialog: Option<Dialog>,
     pub pending_operation: Option<PendingOperation>,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
+        let (config, warning, should_init_config) = CabinConfig::load_or_default();
+        let mut startup_message = warning.unwrap_or_else(|| String::from("Cabin is ready."));
+        if should_init_config {
+            if let Err(err) = config.save() {
+                startup_message =
+                    format!("Cabin is ready, but config.toml could not be created: {err}");
+            }
+        }
+        let show_hidden = config.show_hidden;
+
         let current_dir = starting_dir();
         let places = build_places();
-        let (image_jobs_tx, image_jobs_rx) =
-            spawn_image_worker(Picker::from_query_stdio().unwrap_or_else(|_| {
-                Picker::from_fontsize((10, 20))
-            }));
+        let (image_jobs_tx, image_jobs_rx) = spawn_image_worker(
+            Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((10, 20))),
+        );
         let mut app = Self {
             should_quit: false,
             active_panel: Panel::Contents,
+            config,
             current_dir,
             places,
             directory_entries: Vec::new(),
@@ -173,9 +187,11 @@ impl App {
             image_pending: HashSet::new(),
             last_image_area: None,
             preview_scroll: 0,
-            show_hidden: false,
-            status_message: Some(String::from("Cabin is ready.")),
+            show_hidden,
+            status_message: Some(startup_message),
             help_visible: false,
+            settings_visible: false,
+            settings_selected: 0,
             dialog: None,
             pending_operation: None,
         };
@@ -189,6 +205,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.settings_visible {
+            self.handle_settings_key(key);
+            return;
+        }
+
         if self.help_visible {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => {
@@ -206,6 +227,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.help_visible = true,
+            KeyCode::Char('s') => self.toggle_settings(),
             KeyCode::Tab => self.next_panel(),
             KeyCode::BackTab => self.previous_panel(),
             KeyCode::Char('h') => self.toggle_hidden(),
@@ -392,7 +414,10 @@ impl App {
         }
 
         let start = self.contents_selected.saturating_sub(1);
-        let end = self.contents_selected.saturating_add(3).min(self.entries.len());
+        let end = self
+            .contents_selected
+            .saturating_add(3)
+            .min(self.entries.len());
 
         for index in start..end {
             if let Some(entry) = self.entries.get(index) {
@@ -494,17 +519,140 @@ impl App {
         true
     }
 
+    fn handle_settings_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('s') => {
+                self.settings_visible = false;
+                self.set_status("Closed settings.");
+            }
+            KeyCode::Enter => {
+                self.settings_visible = false;
+                self.set_status("Saved settings.");
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.settings_selected = self.settings_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.settings_selected =
+                    (self.settings_selected + 1).min(Self::settings_count().saturating_sub(1));
+            }
+            KeyCode::Left | KeyCode::Char('h') => self.cycle_setting(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.cycle_setting(1),
+            _ => {}
+        }
+    }
+
+    fn toggle_settings(&mut self) {
+        self.settings_visible = !self.settings_visible;
+        if self.settings_visible {
+            self.help_visible = false;
+        }
+        self.settings_selected = self
+            .settings_selected
+            .min(Self::settings_count().saturating_sub(1));
+        let message = if self.settings_visible {
+            "Settings opened. Use Left/Right to change."
+        } else {
+            "Settings closed."
+        };
+        self.set_status(message);
+    }
+
+    fn settings_count() -> usize {
+        6
+    }
+
+    fn cycle_setting(&mut self, delta: isize) {
+        match self.settings_selected {
+            0 => {
+                self.config.theme = if delta < 0 {
+                    self.config.theme.prev()
+                } else {
+                    self.config.theme.next()
+                };
+                self.persist_config("Theme updated.");
+            }
+            1 => {
+                self.config.accent_color = if delta < 0 {
+                    self.config.accent_color.prev()
+                } else {
+                    self.config.accent_color.next()
+                };
+                self.persist_config("Accent color updated.");
+            }
+            2 => {
+                self.config.border_style = if delta < 0 {
+                    self.config.border_style.prev()
+                } else {
+                    self.config.border_style.next()
+                };
+                self.persist_config("Border style updated.");
+            }
+            3 => {
+                self.config.panel_layout = if delta < 0 {
+                    self.config.panel_layout.prev()
+                } else {
+                    self.config.panel_layout.next()
+                };
+                self.persist_config("Panel layout updated.");
+            }
+            4 => {
+                self.config.show_footer_tips = !self.config.show_footer_tips;
+                self.persist_config("Footer tips toggled.");
+            }
+            5 => {
+                self.config.show_hidden = !self.config.show_hidden;
+                self.show_hidden = self.config.show_hidden;
+                match self.refresh_entries() {
+                    Ok(()) => self.persist_config("Hidden files setting updated."),
+                    Err(err) => self.set_status(format!("Error: {err}")),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn persist_config(&mut self, message: &str) {
+        match self.config.save() {
+            Ok(()) => self.set_status(message),
+            Err(err) => self.set_status(format!("Error: {err}")),
+        }
+    }
+
     pub fn place_preview_lines(&self) -> Vec<String> {
         if self.places.is_empty() {
             return vec![String::from("No places available.")];
         }
 
-        let index = self.places_selected.min(self.places.len().saturating_sub(1));
+        let index = self
+            .places_selected
+            .min(self.places.len().saturating_sub(1));
         let place = &self.places[index];
         vec![
             format!("Type: Shortcut"),
             format!("Name: {}", place.name),
             format!("Path: {}", place.path.display()),
+        ]
+    }
+
+    pub fn settings_rows(&self) -> Vec<String> {
+        vec![
+            format!("Theme: {}", self.config.theme.label()),
+            format!("Accent color: {}", self.config.accent_color.label()),
+            format!("Border style: {}", self.config.border_style.label()),
+            format!("Panel layout: {}", self.config.panel_layout.label()),
+            format!(
+                "Footer tips: {}",
+                if self.config.show_footer_tips {
+                    "On"
+                } else {
+                    "Off"
+                }
+            ),
+            format!(
+                "Show hidden files: {}",
+                if self.config.show_hidden { "On" } else { "Off" }
+            ),
         ]
     }
 
@@ -706,9 +854,8 @@ impl App {
                 self.set_status(format!("Opened {}", entry.name));
             }
             EntryKind::File | EntryKind::Symlink | EntryKind::Unknown => {
-                open_with_system(&entry.path).with_context(|| {
-                    format!("Could not open {}", entry.path.display())
-                })?;
+                open_with_system(&entry.path)
+                    .with_context(|| format!("Could not open {}", entry.path.display()))?;
                 self.set_status(format!("Opened externally: {}", entry.name));
             }
             EntryKind::Drive => {
@@ -748,11 +895,15 @@ impl App {
 
     fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
+        self.config.show_hidden = self.show_hidden;
         match self.refresh_entries() {
-            Ok(()) => {
-                let state = if self.show_hidden { "shown" } else { "hidden" };
-                self.set_status(format!("Hidden files are now {state}."));
-            }
+            Ok(()) => match self.config.save() {
+                Ok(()) => {
+                    let state = if self.show_hidden { "shown" } else { "hidden" };
+                    self.set_status(format!("Hidden files are now {state}."));
+                }
+                Err(err) => self.set_status(format!("Error: {err}")),
+            },
             Err(err) => self.set_status(format!("Error: {err}")),
         }
     }
@@ -877,9 +1028,7 @@ impl App {
         self.dialog = Some(Dialog::Input {
             title: String::from("Rename"),
             value: entry.name.clone(),
-            action: InputAction::Rename {
-                source: entry.path,
-            },
+            action: InputAction::Rename { source: entry.path },
         });
         self.set_status("Type a new name, then press Enter.");
     }
@@ -1000,7 +1149,8 @@ impl App {
                 if path.exists() {
                     return Err(anyhow!("A file with this name already exists"));
                 }
-                File::create(&path).with_context(|| format!("Unable to create {}", path.display()))?;
+                File::create(&path)
+                    .with_context(|| format!("Unable to create {}", path.display()))?;
                 path
             }
             InputAction::CreateFolder { dir } => {
@@ -1008,17 +1158,24 @@ impl App {
                 if path.exists() {
                     return Err(anyhow!("A folder with this name already exists"));
                 }
-                fs::create_dir(&path).with_context(|| format!("Unable to create {}", path.display()))?;
+                fs::create_dir(&path)
+                    .with_context(|| format!("Unable to create {}", path.display()))?;
                 path
             }
             InputAction::Rename { source } => {
-                let parent = source.parent().ok_or_else(|| anyhow!("Cannot rename this item"))?;
+                let parent = source
+                    .parent()
+                    .ok_or_else(|| anyhow!("Cannot rename this item"))?;
                 let path = parent.join(name);
                 if path.exists() {
                     return Err(anyhow!("A file with this name already exists"));
                 }
                 fs::rename(&source, &path).with_context(|| {
-                    format!("Unable to rename {} to {}", source.display(), path.display())
+                    format!(
+                        "Unable to rename {} to {}",
+                        source.display(),
+                        path.display()
+                    )
                 })?;
                 path
             }
@@ -1029,10 +1186,7 @@ impl App {
                 };
                 self.contents_selected = 0;
                 self.apply_contents_mode()?;
-                self.set_status(format!(
-                    "Filtered current folder for \"{}\".",
-                    name
-                ));
+                self.set_status(format!("Filtered current folder for \"{}\".", name));
                 self.dialog = None;
                 return Ok(());
             }
@@ -1043,10 +1197,7 @@ impl App {
                 };
                 self.contents_selected = 0;
                 self.apply_contents_mode()?;
-                self.set_status(format!(
-                    "Search results for \"{}\".",
-                    name
-                ));
+                self.set_status(format!("Search results for \"{}\".", name));
                 self.dialog = None;
                 return Ok(());
             }
@@ -1132,7 +1283,9 @@ impl App {
             }
         };
 
-        self.contents_selected = self.contents_selected.min(self.entries.len().saturating_sub(1));
+        self.contents_selected = self
+            .contents_selected
+            .min(self.entries.len().saturating_sub(1));
         self.refresh_preview();
         self.prefetch_last_image_area();
         Ok(())
@@ -1161,8 +1314,8 @@ fn copy_path_recursive(source: &Path, destination: &Path) -> Result<()> {
     if metadata.is_dir() {
         fs::create_dir(destination)
             .with_context(|| format!("Unable to create {}", destination.display()))?;
-        for entry in fs::read_dir(source)
-            .with_context(|| format!("Unable to read {}", source.display()))?
+        for entry in
+            fs::read_dir(source).with_context(|| format!("Unable to read {}", source.display()))?
         {
             let entry = entry?;
             let child_source = entry.path();
@@ -1224,12 +1377,36 @@ fn build_places() -> Vec<Place> {
     }
 
     if let Some(user_dirs) = UserDirs::new() {
-        add_if_exists(&mut places, "Desktop", user_dirs.desktop_dir().map(Path::to_path_buf));
-        add_if_exists(&mut places, "Downloads", user_dirs.download_dir().map(Path::to_path_buf));
-        add_if_exists(&mut places, "Documents", user_dirs.document_dir().map(Path::to_path_buf));
-        add_if_exists(&mut places, "Pictures", user_dirs.picture_dir().map(Path::to_path_buf));
-        add_if_exists(&mut places, "Videos", user_dirs.video_dir().map(Path::to_path_buf));
-        add_if_exists(&mut places, "Music", user_dirs.audio_dir().map(Path::to_path_buf));
+        add_if_exists(
+            &mut places,
+            "Desktop",
+            user_dirs.desktop_dir().map(Path::to_path_buf),
+        );
+        add_if_exists(
+            &mut places,
+            "Downloads",
+            user_dirs.download_dir().map(Path::to_path_buf),
+        );
+        add_if_exists(
+            &mut places,
+            "Documents",
+            user_dirs.document_dir().map(Path::to_path_buf),
+        );
+        add_if_exists(
+            &mut places,
+            "Pictures",
+            user_dirs.picture_dir().map(Path::to_path_buf),
+        );
+        add_if_exists(
+            &mut places,
+            "Videos",
+            user_dirs.video_dir().map(Path::to_path_buf),
+        );
+        add_if_exists(
+            &mut places,
+            "Music",
+            user_dirs.audio_dir().map(Path::to_path_buf),
+        );
     }
 
     #[cfg(windows)]
@@ -1271,7 +1448,8 @@ fn add_if_exists(places: &mut Vec<Place>, name: &str, path: Option<PathBuf>) {
 
 fn read_directory(dir: &Path, show_hidden: bool) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
-    let read_dir = fs::read_dir(dir).with_context(|| format!("Unable to read {}", dir.display()))?;
+    let read_dir =
+        fs::read_dir(dir).with_context(|| format!("Unable to read {}", dir.display()))?;
 
     for item in read_dir {
         let item = item?;
@@ -1326,7 +1504,11 @@ fn filter_entries(entries: &[FileEntry], query: &str) -> Vec<FileEntry> {
         .iter()
         .filter(|entry| {
             entry.name.to_lowercase().contains(&needle)
-                || entry.path.to_string_lossy().to_lowercase().contains(&needle)
+                || entry
+                    .path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&needle)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1411,7 +1593,10 @@ fn is_ignored_search_dir(name: &str) -> bool {
 }
 
 fn compare_entries(left: &FileEntry, right: &FileEntry) -> Ordering {
-    match (left.kind == EntryKind::Directory, right.kind == EntryKind::Directory) {
+    match (
+        left.kind == EntryKind::Directory,
+        right.kind == EntryKind::Directory,
+    ) {
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
         _ => left
@@ -1525,6 +1710,7 @@ fn help_lines() -> Vec<String> {
         String::new(),
         String::from("q          Quit"),
         String::from("?          Toggle help"),
+        String::from("s          Open settings"),
         String::from("Tab        Next panel"),
         String::from("Shift+Tab  Previous panel"),
         String::from("Up/Down    Move selection or scroll preview"),
@@ -1543,9 +1729,7 @@ fn help_lines() -> Vec<String> {
     ]
 }
 
-fn spawn_image_worker(
-    picker: Picker,
-) -> (Sender<ImageJob>, Receiver<ImagePreview>) {
+fn spawn_image_worker(picker: Picker) -> (Sender<ImageJob>, Receiver<ImagePreview>) {
     let (job_tx, job_rx) = mpsc::channel::<ImageJob>();
     let (preview_tx, preview_rx) = mpsc::channel::<ImagePreview>();
 
