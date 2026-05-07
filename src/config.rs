@@ -147,6 +147,10 @@ pub struct CabinConfig {
     pub muted_color: String,
     pub border_style: BorderPreset,
     pub panel_layout: PanelLayout,
+    pub start_dir: String,
+    pub remember_last_folder: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_folder: Option<String>,
     pub show_footer_tips: bool,
     pub show_hidden: bool,
 }
@@ -161,6 +165,9 @@ impl Default for CabinConfig {
             muted_color: String::from("#5F5F5F"),
             border_style: BorderPreset::Rounded,
             panel_layout: PanelLayout::Balanced,
+            start_dir: String::from("home"),
+            remember_last_folder: true,
+            last_folder: None,
             show_footer_tips: true,
             show_hidden: false,
         }
@@ -200,6 +207,35 @@ impl CabinConfig {
         let contents = toml::to_string_pretty(self).context("Unable to serialize config.toml")?;
         fs::write(&path, contents).with_context(|| format!("Unable to write {}", path.display()))?;
         Ok(())
+    }
+
+    pub fn startup_dir(&self) -> PathBuf {
+        if self.remember_last_folder {
+            if let Some(last_folder) = self.last_folder.as_deref() {
+                let path = PathBuf::from(last_folder);
+                if path.exists() {
+                    return path;
+                }
+            }
+        }
+
+        match self.start_dir.trim() {
+            "" | "home" => home_dir(),
+            "last" => self
+                .last_folder
+                .as_deref()
+                .map(PathBuf::from)
+                .filter(|path| path.exists())
+                .unwrap_or_else(home_dir),
+            other => {
+                let path = PathBuf::from(other);
+                if path.exists() {
+                    path
+                } else {
+                    home_dir()
+                }
+            }
+        }
     }
 
     fn palette(&self) -> Palette {
@@ -393,4 +429,10 @@ pub fn config_dir() -> PathBuf {
         return base.config_dir().join("Cabin");
     }
     Path::new(".").join("Cabin")
+}
+
+fn home_dir() -> PathBuf {
+    BaseDirs::new()
+        .map(|base| base.home_dir().to_path_buf())
+        .unwrap_or_else(|| Path::new(".").to_path_buf())
 }

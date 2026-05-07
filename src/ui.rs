@@ -400,7 +400,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::from("F5       Refresh folder"),
         Line::from("/        Search current folder"),
         Line::from("Ctrl+f   Recursive search"),
-        Line::from("Settings  Theme, colors, borders, layout, footer tips"),
+        Line::from("Settings  Theme, colors, borders, layout, start dir, last folder"),
     ];
 
     let paragraph = Paragraph::new(lines)
@@ -418,7 +418,7 @@ fn draw_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Dialog, app: &App) {
             title.clone(),
             vec![
                 Line::from(vec![
-                    Span::styled("Name: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("Value: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(value.clone()),
                 ]),
                 Line::from(""),
@@ -434,6 +434,18 @@ fn draw_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Dialog, app: &App) {
                 Line::from(""),
                 Line::from("Y / Enter: yes"),
                 Line::from("N / Esc: no"),
+            ],
+        ),
+        Dialog::Conflict { destination, choice } => (
+            String::from("Paste conflict"),
+            vec![
+                Line::from(format!("Destination exists: {}", destination.display())),
+                Line::from(""),
+                Line::from(format!("Choice: {}", choice.label())),
+                Line::from(""),
+                Line::from("Left/Right: change"),
+                Line::from("Enter: confirm"),
+                Line::from("Esc: cancel"),
             ],
         ),
     };

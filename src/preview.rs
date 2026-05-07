@@ -2,9 +2,11 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use image::ImageReader;
+use lofty::{file::{AudioFile, TaggedFileExt}, read_from_path, tag::Accessor};
 use ratatui::layout::Rect;
 use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
 use remeta::VideoMetadata;
@@ -64,6 +66,22 @@ pub struct VideoPreview {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AudioPreviewKey {
+    pub path: PathBuf,
+}
+
+impl AudioPreviewKey {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+pub struct AudioPreview {
+    pub lines: Vec<String>,
+    pub error: Option<String>,
+}
+
 pub fn is_supported_image(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -108,6 +126,68 @@ pub fn is_supported_audio(path: &Path) -> bool {
         Some(ext)
             if matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac")
     )
+}
+
+pub fn build_audio_preview(path: &Path) -> AudioPreview {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("(unknown)")
+        .to_string();
+
+    let tagged_file = match read_from_path(path) {
+        Ok(file) => file,
+        Err(err) => {
+            return AudioPreview {
+                lines: vec![
+                    String::from("Type: Audio"),
+                    format!("Filename: {file_name}"),
+                    format!("Path: {}", path.display()),
+                    format!("Audio metadata unavailable: {err}"),
+                ],
+                error: Some(format!("Unable to read audio metadata: {err}")),
+            };
+        }
+    };
+
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+    let properties = tagged_file.properties();
+    let bitrate = properties
+        .audio_bitrate()
+        .or_else(|| properties.overall_bitrate())
+        .map(|value| format!("{value} kbps"))
+        .unwrap_or_else(|| String::from("Unknown"));
+
+    let lines = vec![
+        String::from("Type: Audio"),
+        format!("Filename: {file_name}"),
+        format!(
+            "Title: {}",
+            tag.and_then(|tag| tag.title())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| String::from("Unknown"))
+        ),
+        format!(
+            "Artist: {}",
+            tag.and_then(|tag| tag.artist())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| String::from("Unknown"))
+        ),
+        format!(
+            "Album: {}",
+            tag.and_then(|tag| tag.album())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| String::from("Unknown"))
+        ),
+        format!(
+            "Duration: {}",
+            format_duration(properties.duration())
+        ),
+        format!("Bitrate: {bitrate}"),
+        format!("Path: {}", path.display()),
+    ];
+
+    AudioPreview { lines, error: None }
 }
 
 pub fn build_text_preview(path: &Path, max_lines: usize, max_bytes: usize) -> TextPreview {
@@ -271,6 +351,19 @@ pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePre
 
 fn format_duration_ms(duration_ms: u64) -> String {
     let total_seconds = duration_ms / 1000;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;

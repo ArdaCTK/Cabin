@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
-    env,
     fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
@@ -21,9 +20,9 @@ use trash::delete;
 
 use crate::config::{CabinConfig, ThemePreset};
 use crate::preview::{
-    build_image_preview, build_text_preview, build_video_preview, is_supported_audio,
-    is_supported_text, is_supported_video, ImagePreview, ImagePreviewKey, TextPreview,
-    TextPreviewKey, VideoPreview, VideoPreviewKey,
+    build_audio_preview, build_image_preview, build_text_preview, build_video_preview,
+    is_supported_audio, is_supported_text, is_supported_video, AudioPreview, AudioPreviewKey,
+    ImagePreview, ImagePreviewKey, TextPreview, TextPreviewKey, VideoPreview, VideoPreviewKey,
 };
 use crate::system::SystemMonitor;
 
@@ -95,6 +94,7 @@ pub enum InputAction {
     SearchCurrent { base: PathBuf },
     SearchRecursive { base: PathBuf },
     SetColor { target: ColorTarget },
+    SetStartDir,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,12 +114,14 @@ enum SettingField {
     MutedColor,
     BorderStyle,
     PanelLayout,
+    StartDir,
+    RememberLastFolder,
     FooterTips,
     ShowHidden,
 }
 
 impl SettingField {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 11] = [
         Self::Theme,
         Self::AccentColor,
         Self::ForegroundColor,
@@ -127,6 +129,8 @@ impl SettingField {
         Self::MutedColor,
         Self::BorderStyle,
         Self::PanelLayout,
+        Self::StartDir,
+        Self::RememberLastFolder,
         Self::FooterTips,
         Self::ShowHidden,
     ];
@@ -147,6 +151,39 @@ pub enum Dialog {
         path: PathBuf,
         name: String,
     },
+    Conflict {
+        destination: PathBuf,
+        choice: ConflictChoice,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    KeepBoth,
+    Replace,
+    Cancel,
+}
+
+impl ConflictChoice {
+    const ALL: [Self; 3] = [Self::KeepBoth, Self::Replace, Self::Cancel];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KeepBoth => "Keep both",
+            Self::Replace => "Replace",
+            Self::Cancel => "Cancel",
+        }
+    }
+
+    fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    fn prev(self) -> Self {
+        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
 }
 
 struct ImageJob {
@@ -170,6 +207,8 @@ pub struct App {
     pub text_cache_order: VecDeque<TextPreviewKey>,
     pub video_cache: HashMap<VideoPreviewKey, VideoPreview>,
     pub video_cache_order: VecDeque<VideoPreviewKey>,
+    pub audio_cache: HashMap<AudioPreviewKey, AudioPreview>,
+    pub audio_cache_order: VecDeque<AudioPreviewKey>,
     pub image_cache: HashMap<ImagePreviewKey, ImagePreview>,
     pub image_cache_order: VecDeque<ImagePreviewKey>,
     pub hovered_place_entries: Vec<FileEntry>,
@@ -185,6 +224,7 @@ pub struct App {
     pub help_visible: bool,
     pub settings_visible: bool,
     pub settings_selected: usize,
+    pub search_restore_mode: Option<(ContentsMode, usize)>,
     pub dialog: Option<Dialog>,
     pub pending_operation: Option<PendingOperation>,
 }
@@ -201,7 +241,7 @@ impl App {
         }
         let show_hidden = config.show_hidden;
 
-        let current_dir = starting_dir();
+        let current_dir = config.startup_dir();
         let places = build_places();
         let (image_jobs_tx, image_jobs_rx) = spawn_image_worker(
             Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((10, 20))),
@@ -224,6 +264,8 @@ impl App {
             text_cache_order: VecDeque::new(),
             video_cache: HashMap::new(),
             video_cache_order: VecDeque::new(),
+            audio_cache: HashMap::new(),
+            audio_cache_order: VecDeque::new(),
             image_cache: HashMap::new(),
             image_cache_order: VecDeque::new(),
             hovered_place_entries: Vec::new(),
@@ -239,6 +281,7 @@ impl App {
             help_visible: false,
             settings_visible: false,
             settings_selected: 0,
+            search_restore_mode: None,
             dialog: None,
             pending_operation: None,
         };
@@ -324,7 +367,7 @@ impl App {
             Some(Dialog::Input { title, value, .. }) => Some(vec![
                 title.clone(),
                 String::new(),
-                format!("Name: {value}"),
+                format!("Value: {value}"),
                 String::new(),
                 String::from("Enter: confirm"),
                 String::from("Esc: cancel"),
@@ -338,12 +381,27 @@ impl App {
                 String::from("Y / Enter: yes"),
                 String::from("N / Esc: no"),
             ]),
+            Some(Dialog::Conflict {
+                destination,
+                choice,
+            }) => Some(vec![
+                String::from("Paste conflict"),
+                String::new(),
+                format!("Destination exists: {}", destination.display()),
+                String::new(),
+                format!("Choice: {}", choice.label()),
+                String::new(),
+                String::from("Left/Right: change"),
+                String::from("Enter: confirm"),
+                String::from("Esc: cancel"),
+            ]),
             None => None,
         }
     }
 
     fn refresh_preview(&mut self) {
         self.refresh_video_preview();
+        self.refresh_audio_preview();
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
@@ -407,6 +465,35 @@ impl App {
     pub fn cached_video_preview(&self, path: &Path) -> Option<&VideoPreview> {
         let key = VideoPreviewKey::new(path.to_path_buf());
         self.video_cache.get(&key)
+    }
+
+    fn refresh_audio_preview(&mut self) {
+        let Some(entry) = self.current_selection().cloned() else {
+            return;
+        };
+
+        if entry.kind != EntryKind::File || !is_supported_audio(&entry.path) {
+            return;
+        }
+
+        let key = AudioPreviewKey::new(entry.path.clone());
+        if self.audio_cache.contains_key(&key) {
+            return;
+        }
+
+        let preview = build_audio_preview(&entry.path);
+        self.audio_cache.insert(key.clone(), preview);
+        self.audio_cache_order.push_back(key);
+        while self.audio_cache_order.len() > 24 {
+            if let Some(oldest) = self.audio_cache_order.pop_front() {
+                self.audio_cache.remove(&oldest);
+            }
+        }
+    }
+
+    pub fn cached_audio_preview(&self, path: &Path) -> Option<&AudioPreview> {
+        let key = AudioPreviewKey::new(path.to_path_buf());
+        self.audio_cache.get(&key)
     }
 
     fn directory_preview_entries(&self, path: &Path) -> Vec<FileEntry> {
@@ -512,17 +599,43 @@ impl App {
         };
 
         let mut keep_dialog = true;
+        let mut refresh_preview = true;
 
         match &mut dialog {
             Dialog::Input { value, action, .. } => match key.code {
                 KeyCode::Esc => {
-                    self.set_status("Canceled.");
+                    if matches!(
+                        action,
+                        InputAction::SearchCurrent { .. } | InputAction::SearchRecursive { .. }
+                    ) {
+                        if let Err(err) = self.restore_search_mode() {
+                            self.set_status(format!("Error: {err}"));
+                        } else {
+                            self.set_status("Search canceled.");
+                        }
+                    } else {
+                        self.set_status("Canceled.");
+                    }
                     keep_dialog = false;
                 }
                 KeyCode::Enter => {
                     let value = value.trim().to_string();
-                    if value.is_empty() {
-                        self.set_status("Name cannot be empty.");
+                    if matches!(
+                        action,
+                        InputAction::SearchCurrent { .. } | InputAction::SearchRecursive { .. }
+                    ) {
+                        let action = action.clone();
+                        match self.commit_input_action(action, value) {
+                            Ok(()) => {
+                                keep_dialog = false;
+                                self.search_restore_mode = None;
+                            }
+                            Err(err) => {
+                                self.set_status(format!("Error: {err}"));
+                            }
+                        }
+                    } else if value.is_empty() {
+                        self.set_status("Value cannot be empty.");
                     } else {
                         let action = action.clone();
                         match self.commit_input_action(action, value) {
@@ -537,11 +650,26 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     value.pop();
+                    if matches!(
+                        action,
+                        InputAction::SearchCurrent { .. } | InputAction::SearchRecursive { .. }
+                    ) {
+                        refresh_preview = false;
+                        self.update_live_search(action.clone(), value.clone());
+                    }
                 }
                 KeyCode::Char(ch) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                     } else {
                         value.push(ch);
+                        if matches!(
+                            action,
+                            InputAction::SearchCurrent { .. }
+                                | InputAction::SearchRecursive { .. }
+                        ) {
+                            refresh_preview = false;
+                            self.update_live_search(action.clone(), value.clone());
+                        }
                     }
                 }
                 _ => {}
@@ -561,11 +689,34 @@ impl App {
                 }
                 _ => {}
             },
+            Dialog::Conflict { destination, choice } => match key.code {
+                KeyCode::Esc => {
+                    self.set_status("Paste canceled.");
+                    keep_dialog = false;
+                }
+                KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k') => {
+                    *choice = (*choice).prev();
+                }
+                KeyCode::Right | KeyCode::Down | KeyCode::Char('l') | KeyCode::Char('j') => {
+                    *choice = (*choice).next();
+                }
+                KeyCode::Enter => {
+                    let choice = *choice;
+                    let destination = destination.clone();
+                    keep_dialog = false;
+                    if let Err(err) = self.resolve_paste_conflict(choice, destination) {
+                        self.set_status(format!("Error: {err}"));
+                    }
+                }
+                _ => {}
+            },
         }
 
         if keep_dialog {
             self.dialog = Some(dialog);
-            self.refresh_preview();
+            if refresh_preview {
+                self.refresh_preview();
+            }
         }
 
         true
@@ -636,6 +787,15 @@ impl App {
                 );
                 true
             }
+            SettingField::StartDir => {
+                self.begin_start_dir_input();
+                true
+            }
+            SettingField::RememberLastFolder => {
+                self.config.remember_last_folder = !self.config.remember_last_folder;
+                self.persist_config("Remember last folder toggled.");
+                true
+            }
         }
     }
 
@@ -648,7 +808,7 @@ impl App {
             .settings_selected
             .min(Self::settings_count().saturating_sub(1));
         let message = if self.settings_visible {
-            "Settings opened. Use Left/Right to change."
+            "Settings opened. Use Left/Right to change, Enter to edit."
         } else {
             "Settings closed."
         };
@@ -689,6 +849,11 @@ impl App {
                 };
                 self.persist_config("Panel layout updated.");
             }
+            SettingField::StartDir => {}
+            SettingField::RememberLastFolder => {
+                self.config.remember_last_folder = !self.config.remember_last_folder;
+                self.persist_config("Remember last folder toggled.");
+            }
             SettingField::FooterTips => {
                 self.config.show_footer_tips = !self.config.show_footer_tips;
                 self.persist_config("Footer tips toggled.");
@@ -713,6 +878,57 @@ impl App {
             Ok(()) => self.set_status(message),
             Err(err) => self.set_status(format!("Error: {err}")),
         }
+    }
+
+    fn update_live_search(&mut self, action: InputAction, query: String) -> bool {
+        let trimmed = query.trim().to_string();
+
+        if trimmed.is_empty() {
+            if let Some((mode, selected)) = self.search_restore_mode.clone() {
+                self.contents_mode = mode;
+                self.contents_selected = selected;
+                if let Err(err) = self.apply_contents_mode() {
+                    self.set_status(format!("Error: {err}"));
+                }
+                return true;
+            }
+            return false;
+        }
+
+        let result = match action {
+            InputAction::SearchCurrent { base } => {
+                self.contents_mode = ContentsMode::SearchCurrent {
+                    base,
+                    query: trimmed,
+                };
+                self.contents_selected = 0;
+                self.apply_contents_mode()
+            }
+            InputAction::SearchRecursive { base } => {
+                self.contents_mode = ContentsMode::SearchRecursive {
+                    base,
+                    query: trimmed,
+                };
+                self.contents_selected = 0;
+                self.apply_contents_mode()
+            }
+            _ => Ok(()),
+        };
+
+        if let Err(err) = result {
+            self.set_status(format!("Error: {err}"));
+        }
+
+        true
+    }
+
+    fn restore_search_mode(&mut self) -> Result<()> {
+        if let Some((mode, selected)) = self.search_restore_mode.clone() {
+            self.contents_mode = mode;
+            self.contents_selected = selected;
+            self.apply_contents_mode()?;
+        }
+        Ok(())
     }
 
     pub fn place_preview_lines(&self) -> Vec<String> {
@@ -758,6 +974,15 @@ impl App {
             format!("Muted color: {}", self.config.muted_color),
             format!("Border style: {}", self.config.border_style.label()),
             format!("Panel layout: {}", self.config.panel_layout.label()),
+            format!("Start dir: {}", self.config.start_dir),
+            format!(
+                "Remember last folder: {}",
+                if self.config.remember_last_folder {
+                    "On"
+                } else {
+                    "Off"
+                }
+            ),
             format!(
                 "Footer tips: {}",
                 if self.config.show_footer_tips {
@@ -870,6 +1095,70 @@ impl App {
             } else {
                 vec![
                     String::from("Type: Video"),
+                    format!(
+                        "Extension: {}",
+                        entry
+                            .extension
+                            .clone()
+                            .unwrap_or_else(|| String::from("(none)"))
+                    ),
+                    format!(
+                        "Size: {}",
+                        entry
+                            .size
+                            .map(human_size)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!(
+                        "Created at: {}",
+                        entry
+                            .created
+                            .map(format_system_time)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!(
+                        "Modified: {}",
+                        entry
+                            .modified
+                            .map(format_system_time)
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    ),
+                    format!("Path: {}", entry.path.display()),
+                ]
+            }
+        } else if is_supported_audio(&entry.path) {
+            if let Some(preview) = self.cached_audio_preview(&entry.path) {
+                let mut lines = preview.lines.clone();
+                if let Some(error) = preview.error.as_ref() {
+                    lines.push(String::new());
+                    lines.push(format!("Note: {error}"));
+                }
+                lines.push(format!(
+                    "Size: {}",
+                    entry
+                        .size
+                        .map(human_size)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!(
+                    "Created at: {}",
+                    entry
+                        .created
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!(
+                    "Modified: {}",
+                    entry
+                        .modified
+                        .map(format_system_time)
+                        .unwrap_or_else(|| String::from("Unknown"))
+                ));
+                lines.push(format!("Path: {}", entry.path.display()));
+                lines
+            } else {
+                vec![
+                    String::from("Type: Audio"),
                     format!(
                         "Extension: {}",
                         entry
@@ -1025,6 +1314,12 @@ impl App {
         }
 
         self.current_dir = canonical;
+        if self.config.remember_last_folder {
+            self.config.last_folder = Some(self.current_dir.display().to_string());
+            if let Err(err) = self.config.save() {
+                self.set_status(format!("Error: {err}"));
+            }
+        }
         self.contents_mode = ContentsMode::Directory {
             path: self.current_dir.clone(),
         };
@@ -1152,6 +1447,7 @@ impl App {
     }
 
     fn begin_search_current(&mut self) {
+        self.search_restore_mode = Some((self.contents_mode.clone(), self.contents_selected));
         self.dialog = Some(Dialog::Input {
             title: String::from("Search current folder"),
             value: String::new(),
@@ -1159,10 +1455,11 @@ impl App {
                 base: self.current_dir.clone(),
             },
         });
-        self.set_status("Type a search term, then press Enter.");
+        self.set_status("Type to filter live. Enter keeps it, Esc restores.");
     }
 
     fn begin_search_recursive(&mut self) {
+        self.search_restore_mode = Some((self.contents_mode.clone(), self.contents_selected));
         self.dialog = Some(Dialog::Input {
             title: String::from("Recursive search"),
             value: String::new(),
@@ -1170,7 +1467,7 @@ impl App {
                 base: self.current_dir.clone(),
             },
         });
-        self.set_status("Type a search term, then press Enter.");
+        self.set_status("Type to filter live. Enter keeps it, Esc restores.");
     }
 
     fn begin_color_input(&mut self, title: &str, value: String, target: ColorTarget) {
@@ -1180,6 +1477,15 @@ impl App {
             action: InputAction::SetColor { target },
         });
         self.set_status("Type a color code, then press Enter.");
+    }
+
+    fn begin_start_dir_input(&mut self) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from("Start directory"),
+            value: self.config.start_dir.clone(),
+            action: InputAction::SetStartDir,
+        });
+        self.set_status("Type home, last, or a full path, then press Enter.");
     }
 
     fn begin_rename(&mut self) {
@@ -1245,7 +1551,30 @@ impl App {
             return;
         };
 
-        match self.perform_paste(operation) {
+        let source_name = match operation.source.file_name() {
+            Some(name) => name.to_owned(),
+            None => {
+                self.set_status("Source path has no file name.");
+                return;
+            }
+        };
+        let destination = self.current_dir.join(&source_name);
+
+        if same_path(&operation.source, &destination) {
+            self.set_status("Source and destination are the same.");
+            return;
+        }
+
+        if destination.exists() {
+            self.dialog = Some(Dialog::Conflict {
+                destination,
+                choice: ConflictChoice::Cancel,
+            });
+            self.set_status("Destination exists. Choose Keep both, Replace, or Cancel.");
+            return;
+        }
+
+        match self.perform_paste_to_destination(operation, destination) {
             Ok(()) => {}
             Err(err) => self.set_status(format!("Error: {err}")),
         }
@@ -1303,7 +1632,7 @@ impl App {
     fn commit_input_action(&mut self, action: InputAction, raw_name: String) -> Result<()> {
         let name = raw_name.trim();
         if name.is_empty() {
-            return Err(anyhow!("Name cannot be empty"));
+            return Err(anyhow!("Value cannot be empty"));
         }
 
         let target = match action {
@@ -1343,23 +1672,39 @@ impl App {
                 path
             }
             InputAction::SearchCurrent { base } => {
+                if name.is_empty() {
+                    self.restore_search_mode()?;
+                    self.dialog = None;
+                    self.search_restore_mode = None;
+                    self.set_status("Search canceled.");
+                    return Ok(());
+                }
                 self.contents_mode = ContentsMode::SearchCurrent {
                     base: base.clone(),
                     query: name.to_string(),
                 };
                 self.contents_selected = 0;
                 self.apply_contents_mode()?;
+                self.search_restore_mode = None;
                 self.set_status(format!("Filtered current folder for \"{}\".", name));
                 self.dialog = None;
                 return Ok(());
             }
             InputAction::SearchRecursive { base } => {
+                if name.is_empty() {
+                    self.restore_search_mode()?;
+                    self.dialog = None;
+                    self.search_restore_mode = None;
+                    self.set_status("Search canceled.");
+                    return Ok(());
+                }
                 self.contents_mode = ContentsMode::SearchRecursive {
                     base: base.clone(),
                     query: name.to_string(),
                 };
                 self.contents_selected = 0;
                 self.apply_contents_mode()?;
+                self.search_restore_mode = None;
                 self.set_status(format!("Search results for \"{}\".", name));
                 self.dialog = None;
                 return Ok(());
@@ -1378,6 +1723,13 @@ impl App {
                 self.refresh_preview();
                 return Ok(());
             }
+            InputAction::SetStartDir => {
+                let normalized = normalize_start_dir(name)?;
+                self.config.start_dir = normalized;
+                self.dialog = None;
+                self.persist_config("Start directory updated.");
+                return Ok(());
+            }
         };
 
         self.dialog = None;
@@ -1387,20 +1739,43 @@ impl App {
         Ok(())
     }
 
-    fn perform_paste(&mut self, operation: PendingOperation) -> Result<()> {
+    fn resolve_paste_conflict(&mut self, choice: ConflictChoice, destination: PathBuf) -> Result<()> {
+        let operation = self
+            .pending_operation
+            .clone()
+            .ok_or_else(|| anyhow!("Nothing to paste"))?;
+
+        match choice {
+            ConflictChoice::Cancel => {
+                self.set_status("Paste canceled.");
+                Ok(())
+            }
+            ConflictChoice::KeepBoth => {
+                let unique_destination = unique_copy_destination(&destination);
+                self.perform_paste_to_destination(operation, unique_destination)
+            }
+            ConflictChoice::Replace => {
+                if destination.exists() {
+                    remove_path_recursive(&destination)?;
+                }
+                self.perform_paste_to_destination(operation, destination)
+            }
+        }
+    }
+
+    fn perform_paste_to_destination(
+        &mut self,
+        operation: PendingOperation,
+        destination: PathBuf,
+    ) -> Result<()> {
         let source_name = operation
             .source
             .file_name()
             .ok_or_else(|| anyhow!("Source path has no file name"))?
             .to_owned();
-        let destination = self.current_dir.join(&source_name);
 
         if same_path(&operation.source, &destination) {
             return Err(anyhow!("Source and destination are the same"));
-        }
-
-        if destination.exists() {
-            return Err(anyhow!("Destination already exists"));
         }
 
         match operation.mode {
@@ -1563,13 +1938,6 @@ fn remove_path_recursive(path: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn starting_dir() -> PathBuf {
-    if let Some(base) = BaseDirs::new() {
-        return base.home_dir().to_path_buf();
-    }
-    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn build_places() -> Vec<Place> {
@@ -1851,6 +2219,64 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+fn unique_copy_destination(destination: &Path) -> PathBuf {
+    if !destination.exists() {
+        return destination.to_path_buf();
+    }
+
+    let parent = destination.parent().unwrap_or_else(|| Path::new(""));
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("copy");
+
+    let (stem, extension) = if let Some(extension) = destination.extension().and_then(|ext| ext.to_str()) {
+        (
+            destination
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(file_name),
+            Some(extension),
+        )
+    } else {
+        (file_name, None)
+    };
+
+    for index in 1.. {
+        let candidate_name = match extension {
+            Some(extension) if index == 1 => format!("{stem} copy.{extension}"),
+            Some(extension) => format!("{stem} copy {index}.{extension}"),
+            None if index == 1 => format!("{stem} copy"),
+            None => format!("{stem} copy {index}"),
+        };
+        let candidate = parent.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    destination.to_path_buf()
+}
+
+fn normalize_start_dir(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Start directory cannot be empty"));
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    if matches!(lowered.as_str(), "home" | "last") {
+        return Ok(lowered);
+    }
+
+    let path = PathBuf::from(trimmed);
+    if path.exists() {
+        Ok(trimmed.to_string())
+    } else {
+        Err(anyhow!("Start directory does not exist"))
+    }
+}
+
 fn human_size(size: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = size as f64;
@@ -1939,7 +2365,9 @@ fn help_lines() -> Vec<String> {
         String::from("F5         Refresh folder"),
         String::from("/          Search current folder"),
         String::from("Ctrl+f     Recursive search"),
-        String::from("Settings   Enter on color rows to type hex codes"),
+        String::from("Settings   Enter on color/start dir rows to edit"),
+        String::from("Start dir  Edit in Settings, takes effect on next launch"),
+        String::from("Last folder Remembered when enabled"),
     ]
 }
 
