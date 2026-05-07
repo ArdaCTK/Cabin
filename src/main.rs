@@ -54,7 +54,9 @@ fn run() -> Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+                if key.kind == crossterm::event::KeyEventKind::Press {
+                    app.handle_key(key);
+                }
             }
         }
     }
@@ -62,4 +64,3 @@ fn run() -> Result<()> {
     terminal.show_cursor()?;
     Ok(())
 }
-

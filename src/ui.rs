@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Panel};
+use crate::app::{App, Dialog, Panel};
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let size = frame.size();
@@ -22,6 +22,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
     if app.help_visible {
         draw_help(frame, centered_rect(60, 55, size));
+    }
+
+    if let Some(dialog) = app.dialog.as_ref() {
+        draw_dialog(frame, centered_rect(58, 38, size), dialog);
     }
 }
 
@@ -128,6 +132,14 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::raw(" parent  "),
         Span::styled("h", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" hidden  "),
+        Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" new file  "),
+        Span::styled("Shift+n", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" new folder  "),
+        Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" rename  "),
+        Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" delete  "),
         Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" copy path  "),
         Span::styled("F5", Style::default().add_modifier(Modifier::BOLD)),
@@ -158,6 +170,40 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
 
     let paragraph = Paragraph::new(lines)
         .block(panel_block("Help", true))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Dialog) {
+    frame.render_widget(Clear, area);
+
+    let (title, lines) = match dialog {
+        Dialog::Input { title, value, .. } => (
+            title.clone(),
+            vec![
+                Line::from(vec![
+                    Span::styled("Name: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(value.clone()),
+                ]),
+                Line::from(""),
+                Line::from("Enter: confirm"),
+                Line::from("Esc: cancel"),
+                Line::from("Backspace: delete last character"),
+            ],
+        ),
+        Dialog::ConfirmDelete { name, .. } => (
+            String::from("Confirm delete"),
+            vec![
+                Line::from(format!("Move \"{name}\" to Recycle Bin?")),
+                Line::from(""),
+                Line::from("Y / Enter: yes"),
+                Line::from("N / Esc: no"),
+            ],
+        ),
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(panel_block(&title, true))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }

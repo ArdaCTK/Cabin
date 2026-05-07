@@ -1,7 +1,7 @@
 use std::{
     cmp::Ordering,
     env,
-    fs,
+    fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
     time::SystemTime,
@@ -12,6 +12,7 @@ use arboard::Clipboard;
 use chrono::{DateTime, Local};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use directories_next::{BaseDirs, UserDirs};
+use trash::delete;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -52,6 +53,26 @@ pub struct PreviewData {
     pub lines: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub enum InputAction {
+    CreateFile { dir: PathBuf },
+    CreateFolder { dir: PathBuf },
+    Rename { source: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+pub enum Dialog {
+    Input {
+        title: String,
+        value: String,
+        action: InputAction,
+    },
+    ConfirmDelete {
+        path: PathBuf,
+        name: String,
+    },
+}
+
 #[derive(Debug)]
 pub struct App {
     pub should_quit: bool,
@@ -65,6 +86,7 @@ pub struct App {
     pub show_hidden: bool,
     pub status_message: Option<String>,
     pub help_visible: bool,
+    pub dialog: Option<Dialog>,
 }
 
 impl App {
@@ -83,6 +105,7 @@ impl App {
             show_hidden: false,
             status_message: Some(String::from("Cabin is ready.")),
             help_visible: false,
+            dialog: None,
         };
 
         app.sync_places_selection();
@@ -101,6 +124,10 @@ impl App {
             return;
         }
 
+        if self.handle_dialog_key(key) {
+            return;
+        }
+
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.help_visible = true,
@@ -113,17 +140,21 @@ impl App {
             KeyCode::Backspace | KeyCode::Left => self.go_parent(),
             KeyCode::F(5) => self.refresh_current(),
             KeyCode::Char('y') => self.copy_current_path(),
-            KeyCode::Char('r') => self.set_status("Rename is coming in a later version."),
-            KeyCode::Char('d') => self.set_status("Delete is coming in a later version."),
-            KeyCode::Char('n') => self.set_status("New file creation is coming in a later version."),
+            KeyCode::Char('r') => self.begin_rename(),
+            KeyCode::Char('d') => self.begin_delete(),
+            KeyCode::Char('n') => self.begin_new_file(),
             KeyCode::Char('N') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.set_status("New folder creation is coming in a later version.")
+                self.begin_new_folder()
             }
             _ => {}
         }
     }
 
     pub fn active_preview_lines(&self) -> Vec<String> {
+        if let Some(lines) = self.dialog_preview_lines() {
+            return lines;
+        }
+
         if self.help_visible {
             return help_lines();
         }
@@ -134,10 +165,90 @@ impl App {
         }
     }
 
+    pub fn dialog_preview_lines(&self) -> Option<Vec<String>> {
+        match self.dialog.as_ref() {
+            Some(Dialog::Input { title, value, .. }) => Some(vec![
+                title.clone(),
+                String::new(),
+                format!("Name: {value}"),
+                String::new(),
+                String::from("Enter: confirm"),
+                String::from("Esc: cancel"),
+                String::from("Backspace: delete last character"),
+            ]),
+            Some(Dialog::ConfirmDelete { name, .. }) => Some(vec![
+                String::from("Delete confirmation"),
+                String::new(),
+                format!("Move \"{name}\" to Recycle Bin?"),
+                String::new(),
+                String::from("Y / Enter: yes"),
+                String::from("N / Esc: no"),
+            ]),
+            None => None,
+        }
+    }
+
     fn refresh_preview(&mut self) {
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
+    }
+
+    fn handle_dialog_key(&mut self, key: KeyEvent) -> bool {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+
+        match dialog {
+            Dialog::Input { value, .. } => match key.code {
+                KeyCode::Esc => {
+                    self.dialog = None;
+                    self.set_status("Canceled.");
+                }
+                KeyCode::Enter => {
+                    let value = value.trim().to_string();
+                    if value.is_empty() {
+                        self.set_status("Name cannot be empty.");
+                        return true;
+                    }
+                    let dialog = self.dialog.take();
+                    if let Some(Dialog::Input { action, .. }) = dialog {
+                        if let Err(err) = self.commit_input_action(action, value) {
+                            self.set_status(format!("Error: {err}"));
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                    self.refresh_preview();
+                }
+                KeyCode::Char(ch) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        return true;
+                    }
+                    value.push(ch);
+                    self.refresh_preview();
+                }
+                _ => {}
+            },
+            Dialog::ConfirmDelete { path, name } => match key.code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.dialog = None;
+                    self.set_status("Delete canceled.");
+                }
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    let target = path.clone();
+                    let label = name.clone();
+                    self.dialog = None;
+                    if let Err(err) = self.delete_entry(target, label) {
+                        self.set_status(format!("Error: {err}"));
+                    }
+                }
+                _ => {}
+            },
+        }
+
+        true
     }
 
     pub fn place_preview_lines(&self) -> Vec<String> {
@@ -336,6 +447,65 @@ impl App {
         }
     }
 
+    fn selected_entry(&self) -> Option<&FileEntry> {
+        if matches!(self.active_panel, Panel::Contents | Panel::Preview) {
+            self.current_selection()
+        } else {
+            None
+        }
+    }
+
+    fn begin_new_file(&mut self) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from("New file"),
+            value: String::from("new_file.txt"),
+            action: InputAction::CreateFile {
+                dir: self.current_dir.clone(),
+            },
+        });
+        self.set_status("Type a file name, then press Enter.");
+    }
+
+    fn begin_new_folder(&mut self) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from("New folder"),
+            value: String::from("New Folder"),
+            action: InputAction::CreateFolder {
+                dir: self.current_dir.clone(),
+            },
+        });
+        self.set_status("Type a folder name, then press Enter.");
+    }
+
+    fn begin_rename(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            self.set_status("Select a file or folder in Contents first.");
+            return;
+        };
+
+        self.dialog = Some(Dialog::Input {
+            title: String::from("Rename"),
+            value: entry.name.clone(),
+            action: InputAction::Rename {
+                source: entry.path,
+            },
+        });
+        self.set_status("Type a new name, then press Enter.");
+    }
+
+    fn begin_delete(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            self.set_status("Select a file or folder in Contents first.");
+            return;
+        };
+
+        self.dialog = Some(Dialog::ConfirmDelete {
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+        });
+        self.set_status("Confirm delete with Y, cancel with N.");
+    }
+
     fn refresh_current(&mut self) {
         match self.refresh_entries() {
             Ok(()) => self.set_status("Refreshed current folder."),
@@ -349,6 +519,55 @@ impl App {
             Ok(()) => self.set_status(format!("Copied path: {path}")),
             Err(err) => self.set_status(format!("Error: {err}")),
         }
+    }
+
+    fn commit_input_action(&mut self, action: InputAction, raw_name: String) -> Result<()> {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(anyhow!("Name cannot be empty"));
+        }
+
+        let target = match action {
+            InputAction::CreateFile { dir } => {
+                let path = dir.join(name);
+                if path.exists() {
+                    return Err(anyhow!("A file with this name already exists"));
+                }
+                File::create(&path).with_context(|| format!("Unable to create {}", path.display()))?;
+                path
+            }
+            InputAction::CreateFolder { dir } => {
+                let path = dir.join(name);
+                if path.exists() {
+                    return Err(anyhow!("A folder with this name already exists"));
+                }
+                fs::create_dir(&path).with_context(|| format!("Unable to create {}", path.display()))?;
+                path
+            }
+            InputAction::Rename { source } => {
+                let parent = source.parent().ok_or_else(|| anyhow!("Cannot rename this item"))?;
+                let path = parent.join(name);
+                if path.exists() {
+                    return Err(anyhow!("A file with this name already exists"));
+                }
+                fs::rename(&source, &path).with_context(|| {
+                    format!("Unable to rename {} to {}", source.display(), path.display())
+                })?;
+                path
+            }
+        };
+
+        self.dialog = None;
+        self.refresh_entries()?;
+        self.set_status(format!("Updated {}", target.display()));
+        Ok(())
+    }
+
+    fn delete_entry(&mut self, path: PathBuf, name: String) -> Result<()> {
+        delete(&path).with_context(|| format!("Unable to move {} to trash", path.display()))?;
+        self.refresh_entries()?;
+        self.set_status(format!("Moved {name} to Recycle Bin."));
+        Ok(())
     }
 
     fn refresh_entries(&mut self) -> Result<()> {
