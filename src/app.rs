@@ -19,12 +19,13 @@ use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use trash::delete;
 
-use crate::config::CabinConfig;
+use crate::config::{CabinConfig, ThemePreset};
 use crate::preview::{
     build_image_preview, build_text_preview, build_video_preview, is_supported_audio,
     is_supported_text, is_supported_video, ImagePreview, ImagePreviewKey, TextPreview,
     TextPreviewKey, VideoPreview, VideoPreviewKey,
 };
+use crate::system::SystemMonitor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -93,6 +94,46 @@ pub enum InputAction {
     Rename { source: PathBuf },
     SearchCurrent { base: PathBuf },
     SearchRecursive { base: PathBuf },
+    SetColor { target: ColorTarget },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTarget {
+    Accent,
+    Foreground,
+    Background,
+    Muted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingField {
+    Theme,
+    AccentColor,
+    ForegroundColor,
+    BackgroundColor,
+    MutedColor,
+    BorderStyle,
+    PanelLayout,
+    FooterTips,
+    ShowHidden,
+}
+
+impl SettingField {
+    const ALL: [Self; 9] = [
+        Self::Theme,
+        Self::AccentColor,
+        Self::ForegroundColor,
+        Self::BackgroundColor,
+        Self::MutedColor,
+        Self::BorderStyle,
+        Self::PanelLayout,
+        Self::FooterTips,
+        Self::ShowHidden,
+    ];
+
+    fn from_index(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len().saturating_sub(1))]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +174,7 @@ pub struct App {
     pub image_cache_order: VecDeque<ImagePreviewKey>,
     pub hovered_place_entries: Vec<FileEntry>,
     pub hovered_place_error: Option<String>,
+    pub system_monitor: SystemMonitor,
     image_jobs_tx: Sender<ImageJob>,
     image_jobs_rx: Receiver<ImagePreview>,
     image_pending: HashSet<ImagePreviewKey>,
@@ -186,6 +228,7 @@ impl App {
             image_cache_order: VecDeque::new(),
             hovered_place_entries: Vec::new(),
             hovered_place_error: None,
+            system_monitor: SystemMonitor::new(),
             image_jobs_tx,
             image_jobs_rx,
             image_pending: HashSet::new(),
@@ -210,6 +253,10 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.handle_dialog_key(key) {
+            return;
+        }
+
         if self.settings_visible {
             self.handle_settings_key(key);
             return;
@@ -222,10 +269,6 @@ impl App {
                 }
                 _ => {}
             }
-            return;
-        }
-
-        if self.handle_dialog_key(key) {
             return;
         }
 
@@ -535,6 +578,9 @@ impl App {
                 self.set_status("Closed settings.");
             }
             KeyCode::Enter => {
+                if self.open_selected_setting_editor() {
+                    return;
+                }
                 self.settings_visible = false;
                 self.set_status("Saved settings.");
             }
@@ -548,6 +594,48 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => self.cycle_setting(-1),
             KeyCode::Right | KeyCode::Char('l') => self.cycle_setting(1),
             _ => {}
+        }
+    }
+
+    fn open_selected_setting_editor(&mut self) -> bool {
+        match self.selected_setting() {
+            SettingField::Theme
+            | SettingField::BorderStyle
+            | SettingField::PanelLayout
+            | SettingField::FooterTips
+            | SettingField::ShowHidden => false,
+            SettingField::AccentColor => {
+                self.begin_color_input(
+                    "Accent color",
+                    self.config.accent_color.clone(),
+                    ColorTarget::Accent,
+                );
+                true
+            }
+            SettingField::ForegroundColor => {
+                self.begin_color_input(
+                    "Foreground color",
+                    self.config.foreground_color.clone(),
+                    ColorTarget::Foreground,
+                );
+                true
+            }
+            SettingField::BackgroundColor => {
+                self.begin_color_input(
+                    "Background color",
+                    self.config.background_color.clone(),
+                    ColorTarget::Background,
+                );
+                true
+            }
+            SettingField::MutedColor => {
+                self.begin_color_input(
+                    "Muted color",
+                    self.config.muted_color.clone(),
+                    ColorTarget::Muted,
+                );
+                true
+            }
         }
     }
 
@@ -568,12 +656,16 @@ impl App {
     }
 
     fn settings_count() -> usize {
-        6
+        SettingField::ALL.len()
+    }
+
+    fn selected_setting(&self) -> SettingField {
+        SettingField::from_index(self.settings_selected)
     }
 
     fn cycle_setting(&mut self, delta: isize) {
-        match self.settings_selected {
-            0 => {
+        match self.selected_setting() {
+            SettingField::Theme => {
                 self.config.theme = if delta < 0 {
                     self.config.theme.prev()
                 } else {
@@ -581,15 +673,7 @@ impl App {
                 };
                 self.persist_config("Theme updated.");
             }
-            1 => {
-                self.config.accent_color = if delta < 0 {
-                    self.config.accent_color.prev()
-                } else {
-                    self.config.accent_color.next()
-                };
-                self.persist_config("Accent color updated.");
-            }
-            2 => {
+            SettingField::BorderStyle => {
                 self.config.border_style = if delta < 0 {
                     self.config.border_style.prev()
                 } else {
@@ -597,7 +681,7 @@ impl App {
                 };
                 self.persist_config("Border style updated.");
             }
-            3 => {
+            SettingField::PanelLayout => {
                 self.config.panel_layout = if delta < 0 {
                     self.config.panel_layout.prev()
                 } else {
@@ -605,11 +689,11 @@ impl App {
                 };
                 self.persist_config("Panel layout updated.");
             }
-            4 => {
+            SettingField::FooterTips => {
                 self.config.show_footer_tips = !self.config.show_footer_tips;
                 self.persist_config("Footer tips toggled.");
             }
-            5 => {
+            SettingField::ShowHidden => {
                 self.config.show_hidden = !self.config.show_hidden;
                 self.show_hidden = self.config.show_hidden;
                 match self.refresh_entries() {
@@ -617,7 +701,10 @@ impl App {
                     Err(err) => self.set_status(format!("Error: {err}")),
                 }
             }
-            _ => {}
+            SettingField::AccentColor
+            | SettingField::ForegroundColor
+            | SettingField::BackgroundColor
+            | SettingField::MutedColor => {}
         }
     }
 
@@ -664,8 +751,11 @@ impl App {
 
     pub fn settings_rows(&self) -> Vec<String> {
         vec![
-            format!("Theme: {}", self.config.theme.label()),
-            format!("Accent color: {}", self.config.accent_color.label()),
+            format!("Theme: {}", self.config.theme_label()),
+            format!("Accent color: {}", self.config.accent_color),
+            format!("Foreground color: {}", self.config.foreground_color),
+            format!("Background color: {}", self.config.background_color),
+            format!("Muted color: {}", self.config.muted_color),
             format!("Border style: {}", self.config.border_style.label()),
             format!("Panel layout: {}", self.config.panel_layout.label()),
             format!(
@@ -681,6 +771,24 @@ impl App {
                 if self.config.show_hidden { "On" } else { "Off" }
             ),
         ]
+    }
+
+    pub fn refresh_system_metrics(&mut self) {
+        self.system_monitor.refresh_if_due(&self.current_dir);
+    }
+
+    pub fn performance_summary(&mut self) -> String {
+        self.refresh_system_metrics();
+        let snapshot = self.system_monitor.snapshot();
+        let cpu = format_metric(snapshot.cpu);
+        let gpu = format_metric(snapshot.gpu);
+        let ram = format_metric(snapshot.ram);
+        let swap = format_metric(snapshot.swap);
+        let disk = format_metric(snapshot.disk);
+
+        format!(
+            "CPU {cpu} | GPU {gpu} | RAM {ram} | SWAP {swap} | DISK {disk}"
+        )
     }
 
     pub fn entry_preview_lines(&self) -> Vec<String> {
@@ -1065,6 +1173,15 @@ impl App {
         self.set_status("Type a search term, then press Enter.");
     }
 
+    fn begin_color_input(&mut self, title: &str, value: String, target: ColorTarget) {
+        self.dialog = Some(Dialog::Input {
+            title: String::from(title),
+            value,
+            action: InputAction::SetColor { target },
+        });
+        self.set_status("Type a color code, then press Enter.");
+    }
+
     fn begin_rename(&mut self) {
         let Some(entry) = self.selected_entry().cloned() else {
             self.set_status("Select a file or folder in Contents first.");
@@ -1245,6 +1362,20 @@ impl App {
                 self.apply_contents_mode()?;
                 self.set_status(format!("Search results for \"{}\".", name));
                 self.dialog = None;
+                return Ok(());
+            }
+            InputAction::SetColor { target } => {
+                let _ = crate::config::parse_color_value(name)?;
+                self.config.theme = ThemePreset::Custom;
+                match target {
+                    ColorTarget::Accent => self.config.accent_color = name.to_string(),
+                    ColorTarget::Foreground => self.config.foreground_color = name.to_string(),
+                    ColorTarget::Background => self.config.background_color = name.to_string(),
+                    ColorTarget::Muted => self.config.muted_color = name.to_string(),
+                }
+                self.dialog = None;
+                self.persist_config("Color updated.");
+                self.refresh_preview();
                 return Ok(());
             }
         };
@@ -1737,6 +1868,13 @@ fn human_size(size: u64) -> String {
     }
 }
 
+fn format_metric(value: Option<f32>) -> String {
+    match value {
+        Some(value) => format!("{value:.0}%"),
+        None => String::from("n/a"),
+    }
+}
+
 fn format_system_time(time: SystemTime) -> String {
     let datetime: DateTime<Local> = time.into();
     datetime.format("%Y-%m-%d %H:%M").to_string()
@@ -1801,6 +1939,7 @@ fn help_lines() -> Vec<String> {
         String::from("F5         Refresh folder"),
         String::from("/          Search current folder"),
         String::from("Ctrl+f     Recursive search"),
+        String::from("Settings   Enter on color rows to type hex codes"),
     ]
 }
 

@@ -319,11 +319,13 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     frame.render_widget(paragraph, inner);
 }
 
-fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let message = app
         .status_message
         .clone()
         .unwrap_or_else(|| String::from("Ready"));
+    let perf_line = Line::from(app.performance_summary());
+
     let mut spans = vec![
         Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" quit  "),
@@ -371,7 +373,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         spans.push(Span::raw(message));
     }
 
-    let footer = Paragraph::new(Line::from(spans))
+    let footer = Paragraph::new(vec![perf_line, Line::from(spans)])
         .style(app.config.muted_style())
         .wrap(Wrap { trim: false });
     frame.render_widget(footer, area);
@@ -474,7 +476,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         height: 2,
     };
     let tip = Paragraph::new(vec![
-        Line::from("Up/Down: select   Left/Right: change   Esc/S: close"),
+        Line::from("Up/Down: select   Left/Right: change   Enter: edit/apply   Esc/S: close"),
         Line::from(format!(
             "Config: {}",
             crate::config::CabinConfig::config_path().display()

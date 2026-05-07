@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod preview;
+mod system;
 mod ui;
 
 use std::{io, time::Duration};
