@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+arboard = "3"
 chrono = { version = "0.4", features = ["clock"] }
 crossterm = "0.28"
 directories-next = "2"
 ratatui = "0.26"
-

@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use arboard::Clipboard;
 use chrono::{DateTime, Local};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use directories_next::{BaseDirs, UserDirs};
@@ -110,6 +111,8 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Enter => self.open_selected(),
             KeyCode::Backspace | KeyCode::Left => self.go_parent(),
+            KeyCode::F(5) => self.refresh_current(),
+            KeyCode::Char('y') => self.copy_current_path(),
             KeyCode::Char('r') => self.set_status("Rename is coming in a later version."),
             KeyCode::Char('d') => self.set_status("Delete is coming in a later version."),
             KeyCode::Char('n') => self.set_status("New file creation is coming in a later version."),
@@ -318,6 +321,34 @@ impl App {
 
     fn current_selection(&self) -> Option<&FileEntry> {
         self.entries.get(self.contents_selected)
+    }
+
+    fn current_path(&self) -> &Path {
+        if self.active_panel == Panel::Places {
+            self.places
+                .get(self.places_selected)
+                .map(|place| place.path.as_path())
+                .unwrap_or(self.current_dir.as_path())
+        } else {
+            self.current_selection()
+                .map(|entry| entry.path.as_path())
+                .unwrap_or(self.current_dir.as_path())
+        }
+    }
+
+    fn refresh_current(&mut self) {
+        match self.refresh_entries() {
+            Ok(()) => self.set_status("Refreshed current folder."),
+            Err(err) => self.set_status(format!("Error: {err}")),
+        }
+    }
+
+    fn copy_current_path(&mut self) {
+        let path = self.current_path().display().to_string();
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(path.clone())) {
+            Ok(()) => self.set_status(format!("Copied path: {path}")),
+            Err(err) => self.set_status(format!("Error: {err}")),
+        }
     }
 
     fn refresh_entries(&mut self) -> Result<()> {

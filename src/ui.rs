@@ -128,6 +128,10 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::raw(" parent  "),
         Span::styled("h", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" hidden  "),
+        Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" copy path  "),
+        Span::styled("F5", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" refresh  "),
         Span::raw("  |  "),
         Span::raw(message),
     ]))
@@ -148,6 +152,8 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("Enter    Open selected item"),
         Line::from("Backspace Parent folder"),
         Line::from("h        Toggle hidden files"),
+        Line::from("y        Copy selected path"),
+        Line::from("F5       Refresh folder"),
     ];
 
     let paragraph = Paragraph::new(lines)
