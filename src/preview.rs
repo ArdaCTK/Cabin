@@ -100,6 +100,16 @@ pub fn is_supported_video(path: &Path) -> bool {
     )
 }
 
+pub fn is_supported_audio(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase()),
+        Some(ext)
+            if matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac")
+    )
+}
+
 pub fn build_text_preview(path: &Path, max_lines: usize, max_bytes: usize) -> TextPreview {
     let file = match File::open(path) {
         Ok(file) => file,

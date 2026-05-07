@@ -21,9 +21,9 @@ use trash::delete;
 
 use crate::config::CabinConfig;
 use crate::preview::{
-    build_image_preview, build_text_preview, build_video_preview, is_supported_text,
-    is_supported_video, ImagePreview, ImagePreviewKey, TextPreview, TextPreviewKey, VideoPreview,
-    VideoPreviewKey,
+    build_image_preview, build_text_preview, build_video_preview, is_supported_audio,
+    is_supported_text, is_supported_video, ImagePreview, ImagePreviewKey, TextPreview,
+    TextPreviewKey, VideoPreview, VideoPreviewKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -644,6 +644,24 @@ impl App {
         ]
     }
 
+    pub fn place_list_label(&self, place: &Place) -> String {
+        format!("{} {}", place_icon(&place.name), place.name)
+    }
+
+    pub fn entry_list_label(&self, entry: &FileEntry) -> String {
+        let name = if entry.kind == EntryKind::Directory {
+            format!("{}/", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        let name = if entry.is_hidden {
+            format!(". {name}")
+        } else {
+            name
+        };
+        format!("{} {}", entry_icon(entry), name)
+    }
+
     pub fn settings_rows(&self) -> Vec<String> {
         vec![
             format!("Theme: {}", self.config.theme.label()),
@@ -702,17 +720,7 @@ impl App {
                 lines.push(String::from("(empty)"));
             } else {
                 for child in children.iter().take(18) {
-                    let marker = if child.kind == EntryKind::Directory {
-                        format!("{}/", child.name)
-                    } else {
-                        child.name.clone()
-                    };
-                    let marker = if child.is_hidden {
-                        format!(". {marker}")
-                    } else {
-                        marker
-                    };
-                    lines.push(marker);
+                    lines.push(self.entry_list_label(child));
                 }
 
                 if children.len() > 18 {
@@ -1794,6 +1802,48 @@ fn help_lines() -> Vec<String> {
         String::from("/          Search current folder"),
         String::from("Ctrl+f     Recursive search"),
     ]
+}
+
+fn place_icon(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "home" => "󰋜",
+        "desktop" => "󰍹",
+        "downloads" => "󰇚",
+        "documents" => "󰈙",
+        "pictures" => "󰋩",
+        "videos" => "󰕧",
+        "music" => "󰝚",
+        _ => "󰉋",
+    }
+}
+
+fn entry_icon(entry: &FileEntry) -> &'static str {
+    match entry.kind {
+        EntryKind::Directory => "󰉋",
+        EntryKind::Symlink => "󰌹",
+        EntryKind::Drive => "󰋊",
+        EntryKind::Unknown => "󰈔",
+        EntryKind::File => {
+            if crate::preview::is_supported_image(&entry.path) {
+                "󰋩"
+            } else if is_supported_video(&entry.path) {
+                "󰕧"
+            } else if is_supported_audio(&entry.path) {
+                "󰝚"
+            } else if is_supported_text(&entry.path) {
+                "󰈙"
+            } else if let Some(ext) = entry.extension.as_deref() {
+                match ext.trim_start_matches('.').to_ascii_lowercase().as_str() {
+                    "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" => "󰗄",
+                    "rs" | "toml" | "json" | "yaml" | "yml" | "html" | "css" | "js" | "ts"
+                    | "py" | "xml" | "csv" | "log" | "ini" => "󰌞",
+                    _ => "󰈔",
+                }
+            } else {
+                "󰈔"
+            }
+        }
+    }
 }
 
 fn spawn_image_worker(picker: Picker) -> (Sender<ImageJob>, Receiver<ImagePreview>) {

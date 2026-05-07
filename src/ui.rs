@@ -123,7 +123,7 @@ fn draw_places(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let items = app
         .places
         .iter()
-        .map(|place| ListItem::new(Line::from(place.name.clone())))
+        .map(|place| ListItem::new(Line::from(app.place_list_label(place))))
         .collect::<Vec<_>>();
     let list = List::new(items)
         .style(app.config.panel_style())
@@ -160,19 +160,7 @@ fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         entries
             .iter()
-            .map(|entry| {
-                let marker = if entry.kind == crate::app::EntryKind::Directory {
-                    format!("{}/", entry.name)
-                } else {
-                    entry.name.clone()
-                };
-                let marker = if entry.is_hidden {
-                    format!(". {marker}")
-                } else {
-                    marker
-                };
-                ListItem::new(Line::from(marker))
-            })
+            .map(|entry| ListItem::new(Line::from(app.entry_list_label(entry))))
             .collect::<Vec<_>>()
     };
     let list = List::new(items)
