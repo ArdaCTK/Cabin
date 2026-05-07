@@ -53,6 +53,19 @@ pub struct PreviewData {
     pub lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardMode {
+    Copy,
+    Cut,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingOperation {
+    pub mode: ClipboardMode,
+    pub source: PathBuf,
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum InputAction {
     CreateFile { dir: PathBuf },
@@ -87,6 +100,7 @@ pub struct App {
     pub status_message: Option<String>,
     pub help_visible: bool,
     pub dialog: Option<Dialog>,
+    pub pending_operation: Option<PendingOperation>,
 }
 
 impl App {
@@ -106,6 +120,7 @@ impl App {
             status_message: Some(String::from("Cabin is ready.")),
             help_visible: false,
             dialog: None,
+            pending_operation: None,
         };
 
         app.sync_places_selection();
@@ -140,6 +155,9 @@ impl App {
             KeyCode::Backspace | KeyCode::Left => self.go_parent(),
             KeyCode::F(5) => self.refresh_current(),
             KeyCode::Char('y') => self.copy_current_path(),
+            KeyCode::Char('c') => self.mark_copy(),
+            KeyCode::Char('x') => self.mark_cut(),
+            KeyCode::Char('p') => self.paste_pending_operation(),
             KeyCode::Char('r') => self.begin_rename(),
             KeyCode::Char('d') => self.begin_delete(),
             KeyCode::Char('n') => self.begin_new_file(),
@@ -159,10 +177,12 @@ impl App {
             return help_lines();
         }
 
-        match self.active_panel {
+        let lines = match self.active_panel {
             Panel::Places => self.place_preview_lines(),
             Panel::Contents | Panel::Preview => self.entry_preview_lines(),
-        }
+        };
+
+        self.with_clipboard_info(lines)
     }
 
     pub fn dialog_preview_lines(&self) -> Option<Vec<String>> {
@@ -195,57 +215,65 @@ impl App {
     }
 
     fn handle_dialog_key(&mut self, key: KeyEvent) -> bool {
-        let Some(dialog) = self.dialog.as_mut() else {
+        let Some(mut dialog) = self.dialog.take() else {
             return false;
         };
 
-        match dialog {
-            Dialog::Input { value, .. } => match key.code {
+        let mut keep_dialog = true;
+
+        match &mut dialog {
+            Dialog::Input { value, action, .. } => match key.code {
                 KeyCode::Esc => {
-                    self.dialog = None;
                     self.set_status("Canceled.");
+                    keep_dialog = false;
                 }
                 KeyCode::Enter => {
                     let value = value.trim().to_string();
                     if value.is_empty() {
                         self.set_status("Name cannot be empty.");
-                        return true;
-                    }
-                    let dialog = self.dialog.take();
-                    if let Some(Dialog::Input { action, .. }) = dialog {
-                        if let Err(err) = self.commit_input_action(action, value) {
-                            self.set_status(format!("Error: {err}"));
+                    } else {
+                        let action = action.clone();
+                        match self.commit_input_action(action, value) {
+                            Ok(()) => {
+                                keep_dialog = false;
+                            }
+                            Err(err) => {
+                                self.set_status(format!("Error: {err}"));
+                            }
                         }
                     }
                 }
                 KeyCode::Backspace => {
                     value.pop();
-                    self.refresh_preview();
                 }
                 KeyCode::Char(ch) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        return true;
+                    } else {
+                        value.push(ch);
                     }
-                    value.push(ch);
-                    self.refresh_preview();
                 }
                 _ => {}
             },
             Dialog::ConfirmDelete { path, name } => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
-                    self.dialog = None;
                     self.set_status("Delete canceled.");
+                    keep_dialog = false;
                 }
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     let target = path.clone();
                     let label = name.clone();
-                    self.dialog = None;
+                    keep_dialog = false;
                     if let Err(err) = self.delete_entry(target, label) {
                         self.set_status(format!("Error: {err}"));
                     }
                 }
                 _ => {}
             },
+        }
+
+        if keep_dialog {
+            self.dialog = Some(dialog);
+            self.refresh_preview();
         }
 
         true
@@ -506,6 +534,48 @@ impl App {
         self.set_status("Confirm delete with Y, cancel with N.");
     }
 
+    fn mark_copy(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            self.set_status("Select a file or folder in Contents first.");
+            return;
+        };
+
+        self.pending_operation = Some(PendingOperation {
+            mode: ClipboardMode::Copy,
+            source: entry.path.clone(),
+            name: entry.name.clone(),
+        });
+        self.refresh_preview();
+        self.set_status(format!("Marked {} for copy.", entry.name));
+    }
+
+    fn mark_cut(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            self.set_status("Select a file or folder in Contents first.");
+            return;
+        };
+
+        self.pending_operation = Some(PendingOperation {
+            mode: ClipboardMode::Cut,
+            source: entry.path.clone(),
+            name: entry.name.clone(),
+        });
+        self.refresh_preview();
+        self.set_status(format!("Marked {} for move.", entry.name));
+    }
+
+    fn paste_pending_operation(&mut self) {
+        let Some(operation) = self.pending_operation.clone() else {
+            self.set_status("Nothing to paste.");
+            return;
+        };
+
+        match self.perform_paste(operation) {
+            Ok(()) => {}
+            Err(err) => self.set_status(format!("Error: {err}")),
+        }
+    }
+
     fn refresh_current(&mut self) {
         match self.refresh_entries() {
             Ok(()) => self.set_status("Refreshed current folder."),
@@ -519,6 +589,21 @@ impl App {
             Ok(()) => self.set_status(format!("Copied path: {path}")),
             Err(err) => self.set_status(format!("Error: {err}")),
         }
+    }
+
+    fn with_clipboard_info(&self, mut lines: Vec<String>) -> Vec<String> {
+        if let Some(operation) = self.pending_operation.as_ref() {
+            lines.push(String::new());
+            let mode = match operation.mode {
+                ClipboardMode::Copy => "Copy",
+                ClipboardMode::Cut => "Cut",
+            };
+            lines.push(format!("Clipboard: {mode} {}", operation.name));
+            lines.push(format!("Source: {}", operation.source.display()));
+            lines.push(String::from("Press p to paste here."));
+        }
+
+        lines
     }
 
     fn commit_input_action(&mut self, action: InputAction, raw_name: String) -> Result<()> {
@@ -559,7 +644,43 @@ impl App {
 
         self.dialog = None;
         self.refresh_entries()?;
+        self.select_entry_by_path(&target);
         self.set_status(format!("Updated {}", target.display()));
+        Ok(())
+    }
+
+    fn perform_paste(&mut self, operation: PendingOperation) -> Result<()> {
+        let source_name = operation
+            .source
+            .file_name()
+            .ok_or_else(|| anyhow!("Source path has no file name"))?
+            .to_owned();
+        let destination = self.current_dir.join(&source_name);
+
+        if same_path(&operation.source, &destination) {
+            return Err(anyhow!("Source and destination are the same"));
+        }
+
+        if destination.exists() {
+            return Err(anyhow!("Destination already exists"));
+        }
+
+        match operation.mode {
+            ClipboardMode::Copy => copy_path_recursive(&operation.source, &destination)?,
+            ClipboardMode::Cut => move_path_recursive(&operation.source, &destination)?,
+        }
+
+        if operation.mode == ClipboardMode::Cut {
+            self.pending_operation = None;
+        }
+        self.refresh_entries()?;
+        self.select_entry_by_path(&destination);
+        if operation.mode == ClipboardMode::Cut {
+            self.set_status(format!("Moved {}.", source_name.to_string_lossy()));
+        } else {
+            self.set_status(format!("Copied {}.", source_name.to_string_lossy()));
+        }
+
         Ok(())
     }
 
@@ -568,6 +689,17 @@ impl App {
         self.refresh_entries()?;
         self.set_status(format!("Moved {name} to Recycle Bin."));
         Ok(())
+    }
+
+    fn select_entry_by_path(&mut self, path: &Path) {
+        if let Some((index, _)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| same_path(&entry.path, path))
+        {
+            self.contents_selected = index;
+        }
     }
 
     fn refresh_entries(&mut self) -> Result<()> {
@@ -591,6 +723,58 @@ impl App {
     fn set_status<S: Into<String>>(&mut self, message: S) {
         self.status_message = Some(message.into());
     }
+}
+
+fn copy_path_recursive(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::metadata(source)
+        .with_context(|| format!("Unable to read metadata for {}", source.display()))?;
+
+    if metadata.is_dir() {
+        fs::create_dir(destination)
+            .with_context(|| format!("Unable to create {}", destination.display()))?;
+        for entry in fs::read_dir(source)
+            .with_context(|| format!("Unable to read {}", source.display()))?
+        {
+            let entry = entry?;
+            let child_source = entry.path();
+            let child_destination = destination.join(entry.file_name());
+            copy_path_recursive(&child_source, &child_destination)?;
+        }
+    } else {
+        fs::copy(source, destination).with_context(|| {
+            format!(
+                "Unable to copy {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn move_path_recursive(source: &Path, destination: &Path) -> Result<()> {
+    match fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_path_recursive(source, destination)?;
+            remove_path_recursive(source)?;
+            Ok(())
+        }
+    }
+}
+
+fn remove_path_recursive(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("Unable to read metadata for {}", path.display()))?;
+
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("Unable to remove {}", path.display()))?;
+    } else {
+        fs::remove_file(path).with_context(|| format!("Unable to remove {}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn starting_dir() -> PathBuf {
