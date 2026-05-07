@@ -728,6 +728,9 @@ impl App {
                 self.settings_visible = false;
                 self.set_status("Closed settings.");
             }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.reset_colors_to_defaults();
+            }
             KeyCode::Enter => {
                 if self.open_selected_setting_editor() {
                     return;
@@ -878,6 +881,17 @@ impl App {
             Ok(()) => self.set_status(message),
             Err(err) => self.set_status(format!("Error: {err}")),
         }
+    }
+
+    fn reset_colors_to_defaults(&mut self) {
+        let defaults = CabinConfig::default();
+        self.config.theme = ThemePreset::Dark;
+        self.config.accent_color = defaults.accent_color;
+        self.config.foreground_color = defaults.foreground_color;
+        self.config.background_color = defaults.background_color;
+        self.config.muted_color = defaults.muted_color;
+        self.persist_config("Colors reset to defaults.");
+        self.refresh_preview();
     }
 
     fn update_live_search(&mut self, action: InputAction, query: String) -> bool {
@@ -2366,6 +2380,7 @@ fn help_lines() -> Vec<String> {
         String::from("/          Search current folder"),
         String::from("Ctrl+f     Recursive search"),
         String::from("Settings   Enter on color/start dir rows to edit"),
+        String::from("Settings   Ctrl+R resets colors to defaults"),
         String::from("Start dir  Edit in Settings, takes effect on next launch"),
         String::from("Last folder Remembered when enabled"),
     ]

@@ -6,6 +6,17 @@ A fast, simple, pure Rust terminal file manager with a three-pane UI.
 
 Early development.
 
+## Install
+
+```powershell
+cargo install --path .
+```
+
+That gives you terminal commands:
+
+- `cabin`
+- `cab`
+
 ## v0.1
 
 - Launches in the terminal
@@ -14,4 +25,3 @@ Early development.
 - Navigates folders
 - Shows file and folder metadata
 - Restores the terminal cleanly on exit
-

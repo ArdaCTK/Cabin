@@ -489,6 +489,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let tip = Paragraph::new(vec![
         Line::from("Up/Down: select   Left/Right: change   Enter: edit/apply   Esc/S: close"),
+        Line::from("Ctrl+R: reset colors to defaults"),
         Line::from(format!(
             "Config: {}",
             crate::config::CabinConfig::config_path().display()
