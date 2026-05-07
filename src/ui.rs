@@ -11,6 +11,7 @@ use crate::app::{App, Dialog, Panel};
 use crate::preview::is_supported_image;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.poll_image_previews();
     let size = frame.area();
 
     let outer = Layout::default()
@@ -143,9 +144,10 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             };
 
             if image_area.width > 0 && image_area.height > 0 {
-                app.update_image_preview(&image_path, image_area);
+                app.last_image_area = Some(image_area);
+                app.prefetch_visible_image_previews(image_area);
 
-                if let Some(preview) = app.image_preview.as_ref() {
+                if let Some(preview) = app.cached_image_preview(&image_path, image_area) {
                     if let Some(error) = preview.error.as_ref() {
                         let error = Paragraph::new(Line::from(error.clone()))
                             .wrap(Wrap { trim: false });
@@ -154,6 +156,10 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                         let image = TerminalImage::new(protocol);
                         frame.render_widget(image, image_area);
                     }
+                } else {
+                    let loading = Paragraph::new(Line::from("Preparing image preview..."))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(loading, image_area);
                 }
             }
 

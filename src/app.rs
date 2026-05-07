@@ -1,9 +1,12 @@
 use std::{
     cmp::Ordering,
+    collections::{HashMap, HashSet, VecDeque},
     env,
     fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    thread,
     time::SystemTime,
 };
 
@@ -16,7 +19,7 @@ use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use trash::delete;
 
-use crate::preview::{build_image_preview, ImagePreview};
+use crate::preview::{build_image_preview, ImagePreview, ImagePreviewKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -99,11 +102,15 @@ pub enum Dialog {
     },
 }
 
+struct ImageJob {
+    path: PathBuf,
+    area: Rect,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub active_panel: Panel,
     pub current_dir: PathBuf,
-    pub picker: Picker,
     pub places: Vec<Place>,
     pub directory_entries: Vec<FileEntry>,
     pub entries: Vec<FileEntry>,
@@ -111,7 +118,12 @@ pub struct App {
     pub places_selected: usize,
     pub contents_selected: usize,
     pub preview: PreviewData,
-    pub image_preview: Option<ImagePreview>,
+    pub image_cache: HashMap<ImagePreviewKey, ImagePreview>,
+    pub image_cache_order: VecDeque<ImagePreviewKey>,
+    image_jobs_tx: Sender<ImageJob>,
+    image_jobs_rx: Receiver<ImagePreview>,
+    image_pending: HashSet<ImagePreviewKey>,
+    pub last_image_area: Option<Rect>,
     pub show_hidden: bool,
     pub status_message: Option<String>,
     pub help_visible: bool,
@@ -123,12 +135,14 @@ impl App {
     pub fn new() -> Result<Self> {
         let current_dir = starting_dir();
         let places = build_places();
-        let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((10, 20)));
+        let (image_jobs_tx, image_jobs_rx) =
+            spawn_image_worker(Picker::from_query_stdio().unwrap_or_else(|_| {
+                Picker::from_fontsize((10, 20))
+            }));
         let mut app = Self {
             should_quit: false,
             active_panel: Panel::Contents,
             current_dir,
-            picker,
             places,
             directory_entries: Vec::new(),
             entries: Vec::new(),
@@ -138,7 +152,12 @@ impl App {
             places_selected: 0,
             contents_selected: 0,
             preview: PreviewData { lines: Vec::new() },
-            image_preview: None,
+            image_cache: HashMap::new(),
+            image_cache_order: VecDeque::new(),
+            image_jobs_tx,
+            image_jobs_rx,
+            image_pending: HashSet::new(),
+            last_image_area: None,
             show_hidden: false,
             status_message: Some(String::from("Cabin is ready.")),
             help_visible: false,
@@ -239,21 +258,79 @@ impl App {
     }
 
     fn refresh_preview(&mut self) {
-        self.image_preview = None;
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
     }
 
-    pub fn update_image_preview(&mut self, path: &Path, area: Rect) {
-        let needs_refresh = self
-            .image_preview
-            .as_ref()
-            .map(|cached| !cached.matches(path, area))
-            .unwrap_or(true);
+    pub fn poll_image_previews(&mut self) {
+        loop {
+            match self.image_jobs_rx.try_recv() {
+                Ok(preview) => {
+                    let key = preview.key.clone();
+                    self.image_pending.remove(&key);
+                    self.image_cache.insert(key.clone(), preview);
+                    self.image_cache_order.push_back(key.clone());
+                    while self.image_cache_order.len() > 24 {
+                        if let Some(oldest) = self.image_cache_order.pop_front() {
+                            self.image_cache.remove(&oldest);
+                            self.image_pending.remove(&oldest);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
 
-        if needs_refresh {
-            self.image_preview = Some(build_image_preview(&self.picker, path, area));
+    pub fn update_image_preview(&mut self, path: &Path, area: Rect) {
+        let key = ImagePreviewKey::new(path.to_path_buf(), area);
+        if self.image_cache.contains_key(&key) || self.image_pending.contains(&key) {
+            return;
+        }
+
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        if self
+            .image_jobs_tx
+            .send(ImageJob {
+                path: path.to_path_buf(),
+                area,
+            })
+            .is_ok()
+        {
+            self.image_pending.insert(key);
+        }
+    }
+
+    pub fn cached_image_preview(&self, path: &Path, area: Rect) -> Option<&ImagePreview> {
+        let key = ImagePreviewKey::new(path.to_path_buf(), area);
+        self.image_cache.get(&key)
+    }
+
+    pub fn prefetch_visible_image_previews(&mut self, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let start = self.contents_selected.saturating_sub(1);
+        let end = self.contents_selected.saturating_add(3).min(self.entries.len());
+
+        for index in start..end {
+            if let Some(entry) = self.entries.get(index) {
+                let path = entry.path.clone();
+                if crate::preview::is_supported_image(&path) {
+                    self.update_image_preview(&path, area);
+                }
+            }
+        }
+    }
+
+    fn prefetch_last_image_area(&mut self) {
+        if let Some(area) = self.last_image_area {
+            self.prefetch_visible_image_previews(area);
         }
     }
 
@@ -474,6 +551,7 @@ impl App {
                 }
                 self.places_selected = move_index(self.places_selected, delta, self.places.len());
                 self.refresh_preview();
+                self.prefetch_last_image_area();
             }
             Panel::Contents | Panel::Preview => {
                 if self.entries.is_empty() {
@@ -482,6 +560,7 @@ impl App {
                 self.contents_selected =
                     move_index(self.contents_selected, delta, self.entries.len());
                 self.refresh_preview();
+                self.prefetch_last_image_area();
             }
         }
     }
@@ -493,6 +572,7 @@ impl App {
             Panel::Preview => Panel::Places,
         };
         self.refresh_preview();
+        self.prefetch_last_image_area();
     }
 
     fn previous_panel(&mut self) {
@@ -502,6 +582,7 @@ impl App {
             Panel::Preview => Panel::Contents,
         };
         self.refresh_preview();
+        self.prefetch_last_image_area();
     }
 
     fn current_selection(&self) -> Option<&FileEntry> {
@@ -819,7 +900,11 @@ impl App {
 
     fn refresh_entries(&mut self) -> Result<()> {
         self.directory_entries = read_directory(&self.current_dir, self.show_hidden)?;
-        self.apply_contents_mode()
+        let result = self.apply_contents_mode();
+        if result.is_ok() {
+            self.prefetch_last_image_area();
+        }
+        result
     }
 
     fn apply_contents_mode(&mut self) -> Result<()> {
@@ -835,6 +920,7 @@ impl App {
 
         self.contents_selected = self.contents_selected.min(self.entries.len().saturating_sub(1));
         self.refresh_preview();
+        self.prefetch_last_image_area();
         Ok(())
     }
 
@@ -1239,4 +1325,22 @@ fn help_lines() -> Vec<String> {
         String::from("/          Search current folder"),
         String::from("Ctrl+f     Recursive search"),
     ]
+}
+
+fn spawn_image_worker(
+    picker: Picker,
+) -> (Sender<ImageJob>, Receiver<ImagePreview>) {
+    let (job_tx, job_rx) = mpsc::channel::<ImageJob>();
+    let (preview_tx, preview_rx) = mpsc::channel::<ImagePreview>();
+
+    thread::spawn(move || {
+        while let Ok(job) = job_rx.recv() {
+            let preview = build_image_preview(&picker, &job.path, job.area);
+            if preview_tx.send(preview).is_err() {
+                break;
+            }
+        }
+    });
+
+    (job_tx, preview_rx)
 }

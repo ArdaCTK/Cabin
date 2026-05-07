@@ -4,17 +4,27 @@ use image::ImageReader;
 use ratatui::layout::Rect;
 use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
 
-pub struct ImagePreview {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImagePreviewKey {
     pub path: PathBuf,
-    pub area: Rect,
-    pub protocol: Option<Protocol>,
-    pub error: Option<String>,
+    pub width: u16,
+    pub height: u16,
 }
 
-impl ImagePreview {
-    pub fn matches(&self, path: &Path, area: Rect) -> bool {
-        self.path == path && self.area == area
+impl ImagePreviewKey {
+    pub fn new(path: PathBuf, area: Rect) -> Self {
+        Self {
+            path,
+            width: area.width,
+            height: area.height,
+        }
     }
+}
+
+pub struct ImagePreview {
+    pub key: ImagePreviewKey,
+    pub protocol: Option<Protocol>,
+    pub error: Option<String>,
 }
 
 pub fn is_supported_image(path: &Path) -> bool {
@@ -31,10 +41,11 @@ pub fn is_supported_image(path: &Path) -> bool {
 }
 
 pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePreview {
+    let key = ImagePreviewKey::new(path.to_path_buf(), area);
+
     if area.width == 0 || area.height == 0 {
         return ImagePreview {
-            path: path.to_path_buf(),
-            area,
+            key,
             protocol: None,
             error: Some(String::from("Preview area is too small.")),
         };
@@ -44,8 +55,7 @@ pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePre
         Ok(reader) => reader,
         Err(err) => {
             return ImagePreview {
-                path: path.to_path_buf(),
-                area,
+                key,
                 protocol: None,
                 error: Some(format!("Unable to open image: {err}")),
             };
@@ -56,8 +66,7 @@ pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePre
         Ok(image) => image,
         Err(err) => {
             return ImagePreview {
-                path: path.to_path_buf(),
-                area,
+                key,
                 protocol: None,
                 error: Some(format!("Unable to decode image: {err}")),
             };
@@ -66,14 +75,12 @@ pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePre
 
     match picker.new_protocol(image, area, Resize::Fit(Some(FilterType::Lanczos3))) {
         Ok(protocol) => ImagePreview {
-            path: path.to_path_buf(),
-            area,
+            key,
             protocol: Some(protocol),
             error: None,
         },
         Err(err) => ImagePreview {
-            path: path.to_path_buf(),
-            area,
+            key,
             protocol: None,
             error: Some(format!("Image preview error: {err}")),
         },
