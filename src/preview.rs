@@ -1,19 +1,20 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-use image::imageops::FilterType;
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-};
+use image::ImageReader;
+use ratatui::layout::Rect;
+use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
 
-#[derive(Debug, Clone)]
 pub struct ImagePreview {
     pub path: PathBuf,
     pub area: Rect,
-    pub caption: Vec<String>,
-    pub lines: Vec<Line<'static>>,
+    pub protocol: Option<Protocol>,
+    pub error: Option<String>,
+}
+
+impl ImagePreview {
+    pub fn matches(&self, path: &Path, area: Rect) -> bool {
+        self.path == path && self.area == area
+    }
 }
 
 pub fn is_supported_image(path: &Path) -> bool {
@@ -29,103 +30,52 @@ pub fn is_supported_image(path: &Path) -> bool {
     )
 }
 
-pub fn build_image_preview(path: &Path, area: Rect, caption: Vec<String>) -> Result<ImagePreview> {
+pub fn build_image_preview(picker: &Picker, path: &Path, area: Rect) -> ImagePreview {
     if area.width == 0 || area.height == 0 {
-        return Ok(ImagePreview {
+        return ImagePreview {
             path: path.to_path_buf(),
             area,
-            caption,
-            lines: Vec::new(),
-        });
+            protocol: None,
+            error: Some(String::from("Preview area is too small.")),
+        };
     }
 
-    let image = image::open(path)
-        .with_context(|| format!("Unable to open image {}", path.display()))?
-        .to_rgba8();
-    let (src_w, src_h) = (image.width(), image.height());
+    let reader = match ImageReader::open(path) {
+        Ok(reader) => reader,
+        Err(err) => {
+            return ImagePreview {
+                path: path.to_path_buf(),
+                area,
+                protocol: None,
+                error: Some(format!("Unable to open image: {err}")),
+            };
+        }
+    };
 
-    if src_w == 0 || src_h == 0 {
-        return Ok(ImagePreview {
+    let image = match reader.decode() {
+        Ok(image) => image,
+        Err(err) => {
+            return ImagePreview {
+                path: path.to_path_buf(),
+                area,
+                protocol: None,
+                error: Some(format!("Unable to decode image: {err}")),
+            };
+        }
+    };
+
+    match picker.new_protocol(image, area, Resize::Fit(Some(FilterType::Lanczos3))) {
+        Ok(protocol) => ImagePreview {
             path: path.to_path_buf(),
             area,
-            caption,
-            lines: Vec::new(),
-        });
+            protocol: Some(protocol),
+            error: None,
+        },
+        Err(err) => ImagePreview {
+            path: path.to_path_buf(),
+            area,
+            protocol: None,
+            error: Some(format!("Image preview error: {err}")),
+        },
     }
-
-    let target_w = area.width.max(1) as u32;
-    let target_h = area.height.max(1) as u32 * 2;
-    let scale_w = target_w as f32 / src_w as f32;
-    let scale_h = target_h as f32 / src_h as f32;
-    let scale = scale_w.min(scale_h);
-
-    let mut resized_w = ((src_w as f32 * scale).round() as u32).max(1);
-    let mut resized_h = ((src_h as f32 * scale).round() as u32).max(2);
-    if resized_h % 2 == 1 {
-        resized_h += 1;
-    }
-
-    let resized = image::imageops::resize(&image, resized_w, resized_h, FilterType::CatmullRom);
-    resized_w = resized.width();
-    resized_h = resized.height();
-
-    let cells_w = resized_w as u16;
-    let cells_h = (resized_h / 2) as u16;
-
-    let pad_x = area.width.saturating_sub(cells_w) / 2;
-    let pad_y = area.height.saturating_sub(cells_h) / 2;
-    let right_pad = area.width.saturating_sub(pad_x + cells_w);
-
-    let mut lines = Vec::new();
-
-    for _ in 0..pad_y {
-        lines.push(blank_line(area.width));
-    }
-
-    for row in 0..cells_h {
-        let mut spans = Vec::new();
-        if pad_x > 0 {
-            spans.push(Span::raw(" ".repeat(pad_x as usize)));
-        }
-
-        for col in 0..cells_w {
-            let top = resized.get_pixel(col as u32, (row as u32) * 2);
-            let bottom = resized.get_pixel(col as u32, (row as u32) * 2 + 1);
-            spans.push(Span::styled(
-                "\u{2580}",
-                Style::default()
-                    .fg(rgb_to_color(top.0))
-                    .bg(rgb_to_color(bottom.0)),
-            ));
-        }
-
-        if right_pad > 0 {
-            spans.push(Span::raw(" ".repeat(right_pad as usize)));
-        }
-
-        lines.push(Line::from(spans));
-    }
-
-    let remaining = area.height.saturating_sub(pad_y + cells_h);
-    for _ in 0..remaining {
-        lines.push(blank_line(area.width));
-    }
-
-    Ok(ImagePreview {
-        path: path.to_path_buf(),
-        area,
-        caption,
-        lines,
-    })
-}
-
-fn blank_line(width: u16) -> Line<'static> {
-    Line::from(" ".repeat(width as usize))
-}
-
-fn rgb_to_color(rgba: [u8; 4]) -> Color {
-    let alpha = rgba[3] as u16;
-    let blend = |channel: u8| -> u8 { ((channel as u16 * alpha) / 255) as u8 };
-
-    Color::Rgb(blend(rgba[0]), blend(rgba[1]), blend(rgba[2]))
 }

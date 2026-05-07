@@ -12,9 +12,11 @@ use arboard::Clipboard;
 use chrono::{DateTime, Local};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use directories_next::{BaseDirs, UserDirs};
+use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
 use trash::delete;
 
-use crate::preview::ImagePreview;
+use crate::preview::{build_image_preview, ImagePreview};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -97,11 +99,11 @@ pub enum Dialog {
     },
 }
 
-#[derive(Debug)]
 pub struct App {
     pub should_quit: bool,
     pub active_panel: Panel,
     pub current_dir: PathBuf,
+    pub picker: Picker,
     pub places: Vec<Place>,
     pub directory_entries: Vec<FileEntry>,
     pub entries: Vec<FileEntry>,
@@ -121,10 +123,12 @@ impl App {
     pub fn new() -> Result<Self> {
         let current_dir = starting_dir();
         let places = build_places();
+        let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((10, 20)));
         let mut app = Self {
             should_quit: false,
             active_panel: Panel::Contents,
             current_dir,
+            picker,
             places,
             directory_entries: Vec::new(),
             entries: Vec::new(),
@@ -239,6 +243,18 @@ impl App {
         self.preview = PreviewData {
             lines: self.active_preview_lines(),
         };
+    }
+
+    pub fn update_image_preview(&mut self, path: &Path, area: Rect) {
+        let needs_refresh = self
+            .image_preview
+            .as_ref()
+            .map(|cached| !cached.matches(path, area))
+            .unwrap_or(true);
+
+        if needs_refresh {
+            self.image_preview = Some(build_image_preview(&self.picker, path, area));
+        }
     }
 
     fn handle_dialog_key(&mut self, key: KeyEvent) -> bool {

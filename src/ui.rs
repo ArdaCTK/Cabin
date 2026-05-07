@@ -5,12 +5,13 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use ratatui_image::Image as TerminalImage;
 
 use crate::app::{App, Dialog, Panel};
-use crate::preview::{build_image_preview, is_supported_image};
+use crate::preview::is_supported_image;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let size = frame.size();
+    let size = frame.area();
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -107,12 +108,12 @@ fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let block = panel_block("Preview", app.active_panel == Panel::Preview);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     if let Some(entry) = app.entries.get(app.contents_selected) {
         if is_supported_image(&entry.path) {
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-
+            let image_path = entry.path.clone();
             let caption_lines = app.preview.lines.clone();
             let caption_height = caption_lines.len().min(inner.height as usize).min(5) as u16;
             let caption_area = Rect {
@@ -129,8 +130,10 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     .map(Line::from)
                     .collect::<Vec<_>>(),
             )
-            .wrap(Wrap { trim: false });
-            frame.render_widget(caption, caption_area);
+                .wrap(Wrap { trim: false });
+            if caption_area.width > 0 && caption_area.height > 0 {
+                frame.render_widget(caption, caption_area);
+            }
 
             let image_area = Rect {
                 x: inner.x,
@@ -140,35 +143,17 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             };
 
             if image_area.width > 0 && image_area.height > 0 {
-                let needs_refresh = app
-                    .image_preview
-                    .as_ref()
-                    .map(|cached| {
-                        cached.path != entry.path
-                            || cached.area != image_area
-                            || cached.caption != caption_lines
-                    })
-                    .unwrap_or(true);
-
-                if needs_refresh {
-                    match build_image_preview(&entry.path, image_area, caption_lines.clone()) {
-                        Ok(preview) => {
-                            app.image_preview = Some(preview);
-                        }
-                        Err(err) => {
-                            let error = Paragraph::new(Line::from(format!(
-                                "Image preview error: {err}"
-                            )))
-                            .wrap(Wrap { trim: false });
-                            frame.render_widget(error, image_area);
-                            return;
-                        }
-                    }
-                }
+                app.update_image_preview(&image_path, image_area);
 
                 if let Some(preview) = app.image_preview.as_ref() {
-                    let image = Paragraph::new(Text::from(preview.lines.clone()));
-                    frame.render_widget(image, image_area);
+                    if let Some(error) = preview.error.as_ref() {
+                        let error = Paragraph::new(Line::from(error.clone()))
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(error, image_area);
+                    } else if let Some(protocol) = preview.protocol.as_ref() {
+                        let image = TerminalImage::new(protocol);
+                        frame.render_widget(image, image_area);
+                    }
                 }
             }
 
@@ -179,9 +164,9 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let lines = app.preview.lines.clone();
     let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
     let paragraph = Paragraph::new(text)
-        .block(block)
+        .block(Block::default())
         .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, inner);
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
