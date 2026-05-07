@@ -1,0 +1,12 @@
+[package]
+name = "cabin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["clock"] }
+crossterm = "0.28"
+directories-next = "2"
+ratatui = "0.26"
+
