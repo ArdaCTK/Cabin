@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Dialog, Panel};
+use crate::preview::{build_image_lines, is_supported_image};
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let size = frame.size();
@@ -106,6 +107,57 @@ fn draw_contents(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = panel_block("Preview", app.active_panel == Panel::Preview);
+
+    if let Some(entry) = app.entries.get(app.contents_selected) {
+        if is_supported_image(&entry.path) {
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let caption_lines = app.preview.lines.clone();
+            let caption_height = caption_lines.len().min(inner.height as usize).min(4) as u16;
+            let caption_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: caption_height,
+            };
+            let caption = Paragraph::new(
+                caption_lines
+                    .into_iter()
+                    .take(caption_height as usize)
+                    .map(Line::from)
+                    .collect::<Vec<_>>(),
+            )
+            .wrap(Wrap { trim: false });
+            frame.render_widget(caption, caption_area);
+
+            let image_area = Rect {
+                x: inner.x,
+                y: inner.y + caption_height,
+                width: inner.width,
+                height: inner.height.saturating_sub(caption_height),
+            };
+
+            if image_area.width > 0 && image_area.height > 0 {
+                match build_image_lines(&entry.path, image_area) {
+                    Ok(lines) => {
+                        let image = Paragraph::new(Text::from(lines));
+                        frame.render_widget(image, image_area);
+                    }
+                    Err(err) => {
+                        let error = Paragraph::new(Line::from(format!(
+                            "Image preview error: {err}"
+                        )))
+                        .wrap(Wrap { trim: false });
+                        frame.render_widget(error, image_area);
+                    }
+                }
+            }
+
+            return;
+        }
+    }
+
     let lines = app.preview.lines.clone();
     let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
     let paragraph = Paragraph::new(text)

@@ -1,4 +1,5 @@
 mod app;
+mod preview;
 mod ui;
 
 use std::{io, time::Duration};
