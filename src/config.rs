@@ -381,7 +381,7 @@ fn color_luma(color: Color) -> u8 {
         _ => (204, 204, 204),
     };
 
-    ((r as u16 * 299 + g as u16 * 587 + b as u16 * 114) / 1000) as u8
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
 }
 
 pub fn config_path() -> PathBuf {
