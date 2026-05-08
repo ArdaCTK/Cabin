@@ -11,6 +11,10 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemePreset {
@@ -41,15 +45,19 @@ impl ThemePreset {
     }
 
     pub fn next(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
     pub fn prev(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
+
+// ---------------------------------------------------------------------------
+// Internal palette helper
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 struct Palette {
@@ -58,6 +66,10 @@ struct Palette {
     accent: Color,
     muted: Color,
 }
+
+// ---------------------------------------------------------------------------
+// Border style
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,13 +93,13 @@ impl BorderPreset {
     }
 
     pub fn next(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
     pub fn prev(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 
     pub fn border_type(self) -> BorderType {
@@ -99,6 +111,10 @@ impl BorderPreset {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Panel layout
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,15 +143,50 @@ impl PanelLayout {
     }
 
     pub fn next(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
     pub fn prev(self) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sort field
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    Name,
+    Size,
+    Modified,
+    Extension,
+}
+
+impl SortField {
+    pub const ALL: [Self; 4] = [Self::Name, Self::Size, Self::Modified, Self::Extension];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Size => "Size",
+            Self::Modified => "Modified",
+            Self::Extension => "Extension",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|x| *x == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config struct
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -147,12 +198,17 @@ pub struct CabinConfig {
     pub muted_color: String,
     pub border_style: BorderPreset,
     pub panel_layout: PanelLayout,
+    pub sort_field: SortField,
+    pub sort_descending: bool,
     pub start_dir: String,
     pub remember_last_folder: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_folder: Option<String>,
     pub show_footer_tips: bool,
     pub show_hidden: bool,
+    /// User-defined bookmark paths (name, path pairs).
+    #[serde(default)]
+    pub bookmarks: Vec<(String, String)>,
 }
 
 impl Default for CabinConfig {
@@ -165,11 +221,14 @@ impl Default for CabinConfig {
             muted_color: String::from("#5F5F5F"),
             border_style: BorderPreset::Rounded,
             panel_layout: PanelLayout::Balanced,
+            sort_field: SortField::Name,
+            sort_descending: false,
             start_dir: String::from("home"),
             remember_last_folder: true,
             last_folder: None,
             show_footer_tips: true,
             show_hidden: false,
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -179,19 +238,17 @@ impl CabinConfig {
         let path = config_path();
         match fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<Self>(&contents) {
-                Ok(config) => (config, None, false),
-                Err(err) => (
+                Ok(cfg) => (cfg, None, false),
+                Err(e) => (
                     Self::default(),
-                    Some(format!(
-                        "Could not parse config.toml, using defaults: {err}"
-                    )),
+                    Some(format!("Could not parse config.toml, using defaults: {e}")),
                     false,
                 ),
             },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => (Self::default(), None, true),
-            Err(err) => (
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), None, true),
+            Err(e) => (
                 Self::default(),
-                Some(format!("Could not read config.toml, using defaults: {err}")),
+                Some(format!("Could not read config.toml, using defaults: {e}")),
                 false,
             ),
         }
@@ -203,37 +260,32 @@ impl CabinConfig {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Unable to create {}", parent.display()))?;
         }
-
         let contents = toml::to_string_pretty(self).context("Unable to serialize config.toml")?;
-        fs::write(&path, contents).with_context(|| format!("Unable to write {}", path.display()))?;
+        fs::write(&path, contents)
+            .with_context(|| format!("Unable to write {}", path.display()))?;
         Ok(())
     }
 
     pub fn startup_dir(&self) -> PathBuf {
         if self.remember_last_folder {
-            if let Some(last_folder) = self.last_folder.as_deref() {
-                let path = PathBuf::from(last_folder);
-                if path.exists() {
-                    return path;
+            if let Some(last) = self.last_folder.as_deref() {
+                let p = PathBuf::from(last);
+                if p.exists() {
+                    return p;
                 }
             }
         }
-
         match self.start_dir.trim() {
             "" | "home" => home_dir(),
             "last" => self
                 .last_folder
                 .as_deref()
                 .map(PathBuf::from)
-                .filter(|path| path.exists())
+                .filter(|p| p.exists())
                 .unwrap_or_else(home_dir),
             other => {
-                let path = PathBuf::from(other);
-                if path.exists() {
-                    path
-                } else {
-                    home_dir()
-                }
+                let p = PathBuf::from(other);
+                if p.exists() { p } else { home_dir() }
             }
         }
     }
@@ -267,8 +319,7 @@ impl CabinConfig {
             ThemePreset::Custom => Palette {
                 foreground: parse_color_value(&self.foreground_color)
                     .unwrap_or_else(|_| rgb(215, 215, 215)),
-                background: parse_color_value(&self.background_color)
-                    .unwrap_or(Color::Black),
+                background: parse_color_value(&self.background_color).unwrap_or(Color::Black),
                 accent: parse_color_value(&self.accent_color)
                     .unwrap_or_else(|_| rgb(0, 215, 215)),
                 muted: parse_color_value(&self.muted_color)
@@ -278,42 +329,37 @@ impl CabinConfig {
     }
 
     pub fn panel_style(&self) -> Style {
-        let palette = self.palette();
-        Style::default()
-            .fg(palette.foreground)
-            .bg(palette.background)
+        let p = self.palette();
+        Style::default().fg(p.foreground).bg(p.background)
     }
 
     pub fn header_style(&self) -> Style {
-        let palette = self.palette();
+        let p = self.palette();
         Style::default()
-            .fg(palette.accent)
-            .bg(palette.background)
+            .fg(p.accent)
+            .bg(p.background)
             .add_modifier(Modifier::BOLD)
     }
 
     pub fn muted_style(&self) -> Style {
-        let palette = self.palette();
-        Style::default().fg(palette.muted).bg(palette.background)
+        let p = self.palette();
+        Style::default().fg(p.muted).bg(p.background)
     }
 
     pub fn active_style(&self) -> Style {
-        let palette = self.palette();
+        let p = self.palette();
         Style::default()
-            .fg(contrast_color(palette.accent))
-            .bg(palette.accent)
+            .fg(contrast_color(p.accent))
+            .bg(p.accent)
             .add_modifier(Modifier::BOLD)
     }
 
     pub fn border_color_style(&self, active: bool) -> Style {
-        let palette = self.palette();
-        Style::default().fg(if active {
-            palette.accent
-        } else {
-            palette.muted
-        })
+        let p = self.palette();
+        Style::default().fg(if active { p.accent } else { p.muted })
     }
 
+    /// Returns the path where the config file is stored.
     pub fn config_path() -> PathBuf {
         config_path()
     }
@@ -323,17 +369,21 @@ impl CabinConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Color parsing
+// ---------------------------------------------------------------------------
+
 pub fn parse_color_value(input: &str) -> Result<Color> {
-    let value = input.trim();
-    if value.is_empty() {
+    let v = input.trim();
+    if v.is_empty() {
         return Err(anyhow!("Color cannot be empty"));
     }
 
-    if value.eq_ignore_ascii_case("reset") || value.eq_ignore_ascii_case("transparent") {
+    if v.eq_ignore_ascii_case("reset") || v.eq_ignore_ascii_case("transparent") {
         return Ok(Color::Reset);
     }
 
-    let named = match value.to_ascii_lowercase().as_str() {
+    let named = match v.to_ascii_lowercase().as_str() {
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
@@ -352,53 +402,44 @@ pub fn parse_color_value(input: &str) -> Result<Color> {
         "white" => Some(Color::White),
         _ => None,
     };
-
-    if let Some(color) = named {
-        return Ok(color);
+    if let Some(c) = named {
+        return Ok(c);
     }
 
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    let rgb = match hex.len() {
-        3 => {
-            let r = expand_nibble(&hex[0..1])?;
-            let g = expand_nibble(&hex[1..2])?;
-            let b = expand_nibble(&hex[2..3])?;
-            (r, g, b)
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).context("Invalid red channel")?;
-            let g = u8::from_str_radix(&hex[2..4], 16).context("Invalid green channel")?;
-            let b = u8::from_str_radix(&hex[4..6], 16).context("Invalid blue channel")?;
-            (r, g, b)
-        }
+    let hex = v.strip_prefix('#').unwrap_or(v);
+    let (r, g, b) = match hex.len() {
+        3 => (
+            expand_nibble(&hex[0..1])?,
+            expand_nibble(&hex[1..2])?,
+            expand_nibble(&hex[2..3])?,
+        ),
+        6 => (
+            u8::from_str_radix(&hex[0..2], 16).context("Invalid red channel")?,
+            u8::from_str_radix(&hex[2..4], 16).context("Invalid green channel")?,
+            u8::from_str_radix(&hex[4..6], 16).context("Invalid blue channel")?,
+        ),
         _ => return Err(anyhow!("Use #RGB or #RRGGBB color codes")),
     };
-
-    Ok(Color::Rgb(rgb.0, rgb.1, rgb.2))
+    Ok(Color::Rgb(r, g, b))
 }
 
-fn expand_nibble(value: &str) -> Result<u8> {
-    let nibble = u8::from_str_radix(value, 16).context("Invalid color nibble")?;
-    Ok(nibble * 17)
+fn expand_nibble(v: &str) -> Result<u8> {
+    let n = u8::from_str_radix(v, 16).context("Invalid color nibble")?;
+    Ok(n * 17)
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
-fn contrast_color(color: Color) -> Color {
-    if color_luma(color) > 150 {
-        Color::Black
-    } else {
-        Color::White
-    }
+fn contrast_color(c: Color) -> Color {
+    if color_luma(c) > 150 { Color::Black } else { Color::White }
 }
 
-fn color_luma(color: Color) -> u8 {
-    let (r, g, b) = match color {
+fn color_luma(c: Color) -> u8 {
+    let (r, g, b) = match c {
         Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset => (0, 0, 0),
-        Color::Black => (0, 0, 0),
+        Color::Reset | Color::Black => (0, 0, 0),
         Color::Red => (205, 49, 49),
         Color::Green => (13, 188, 121),
         Color::Yellow => (229, 229, 16),
@@ -416,14 +457,19 @@ fn color_luma(color: Color) -> u8 {
         Color::White => (255, 255, 255),
         _ => (204, 204, 204),
     };
-
     ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
 }
 
+// ---------------------------------------------------------------------------
+// Path helpers (single source of truth — no duplicate free function)
+// ---------------------------------------------------------------------------
+
+/// Returns the path to the config file.
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// Returns the directory that holds all Cabin config files.
 pub fn config_dir() -> PathBuf {
     if let Some(base) = BaseDirs::new() {
         return base.config_dir().join("Cabin");
@@ -433,6 +479,6 @@ pub fn config_dir() -> PathBuf {
 
 fn home_dir() -> PathBuf {
     BaseDirs::new()
-        .map(|base| base.home_dir().to_path_buf())
+        .map(|b| b.home_dir().to_path_buf())
         .unwrap_or_else(|| Path::new(".").to_path_buf())
 }

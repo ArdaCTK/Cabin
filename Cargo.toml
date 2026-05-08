@@ -2,6 +2,15 @@
 name = "cabin"
 version = "0.1.0"
 edition = "2021"
+default-run = "cabin"
+
+[[bin]]
+name = "cabin"
+path = "src/main.rs"
+
+[[bin]]
+name = "cab"
+path = "src/bin/cab.rs"
 
 [dependencies]
 anyhow = "1"
@@ -12,6 +21,7 @@ directories-next = "2"
 ignore = "0.4"
 image = "0.25"
 lofty = "0.24"
+lopdf = "0.34"
 serde = { version = "1", features = ["derive"] }
 ratatui = "0.29"
 ratatui-image = { version = "8.1.1", default-features = false, features = ["image-defaults", "crossterm"] }
