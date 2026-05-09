@@ -4,7 +4,7 @@ A fast, pure-Rust terminal file manager with a three-pane UI, async media previe
 
 ## Status
 
-Actively developed and fully usable for day-to-day browsing.
+Early development, but fully usable for day-to-day browsing.
 
 ## Install
 
